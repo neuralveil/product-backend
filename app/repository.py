@@ -41,12 +41,83 @@ class ProductRepository:
         except Exception as exc:
             raise BackendError(f"Failed to load company for ticker {normalized_ticker}: {exc}") from exc
 
-    def list_quarter_states(self, company_id: int, limit: int) -> list[dict[str, Any]]:
+    def get_latest_strategy_snapshot(self, company_id: int) -> dict[str, Any] | None:
         try:
             response = (
-                self.client.table("company_quarter_strategy_states")
+                self.client.table("company_strategy_snapshots")
+                .select("filing_id,filing_date,filing_type,dominant_themes,emerging_themes,declining_themes")
+                .eq("company_id", company_id)
+                .order("filing_date", desc=True)
+                .limit(1)
+                .execute()
+            )
+            return (response.data or [None])[0]
+        except Exception:
+            return None
+
+    def list_company_strategy_scores_for_filing(self, company_id: int, filing_id: int) -> list[dict[str, Any]]:
+        try:
+            response = (
+                self.client.table("company_strategy_scores")
+                .select("dimension_key,theme_key,score,evidence_count,evidence_quotes")
+                .eq("company_id", company_id)
+                .eq("filing_id", filing_id)
+                .execute()
+            )
+            return response.data or []
+        except Exception:
+            return []
+
+    def list_company_strategy_scores_all(self, company_id: int, limit: int = 1200) -> list[dict[str, Any]]:
+        try:
+            response = (
+                self.client.table("company_strategy_scores")
+                .select("filing_id,filing_date,filing_type,quarter,dimension_key,theme_key,score,evidence_count,evidence_quotes")
+                .eq("company_id", company_id)
+                .order("filing_date", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            return response.data or []
+        except Exception:
+            return []
+
+    def list_theme_timeseries_latest(self, company_id: int, limit: int = 600) -> list[dict[str, Any]]:
+        try:
+            response = (
+                self.client.table("strategy_theme_timeseries")
+                .select("filing_id,filing_date,dimension_key,theme_key,persistence_count,persistence_score")
+                .eq("company_id", company_id)
+                .order("filing_date", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            return response.data or []
+        except Exception:
+            return []
+
+    def list_strategy_trends(self, company_id: int, theme_key: str | None = None, limit: int = 400) -> list[dict[str, Any]]:
+        try:
+            query = (
+                self.client.table("strategy_theme_timeseries")
+                .select("filing_id,filing_date,quarter,score,smoothed_score,persistence_count,persistence_score,theme_key,dimension_key")
+                .eq("company_id", company_id)
+                .order("quarter", desc=False)
+                .limit(limit)
+            )
+            if theme_key:
+                query = query.eq("theme_key", theme_key)
+            response = query.execute()
+            return response.data or []
+        except Exception:
+            return []
+
+    def list_company_strategy_signals(self, company_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        try:
+            response = (
+                self.client.table("company_strategy_signals")
                 .select(
-                    "filing_id,filing_type,filing_date,shift_level,net_direction,contradictions_count,pivots_count,changed_sections_count"
+                    "filing_id,theme_key,dimension_key,direction,confidence,signal_title,signal_description,filing_date,filing_type,evidence_quote,evidence_summary"
                 )
                 .eq("company_id", company_id)
                 .order("filing_date", desc=True)
@@ -54,10 +125,67 @@ class ProductRepository:
                 .execute()
             )
             return response.data or []
-        except Exception as exc:
-            raise BackendError(f"Failed to load quarter states for company_id={company_id}: {exc}") from exc
+        except Exception:
+            return []
 
-    def list_strategy_extractions(self, company_id: int, limit: int) -> list[dict[str, Any]]:
+    def list_strategy_response_links(self, company_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        try:
+            response = (
+                self.client.table("strategy_response_links")
+                .select(
+                    "risk_theme_key,response_theme_key,risk_score,response_score,risk_delta,response_delta,link_strength,confidence,evidence_quote_risk,evidence_quote_response,filing_date,filing_type,quarter"
+                )
+                .eq("company_id", company_id)
+                .order("filing_date", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            return response.data or []
+        except Exception:
+            return []
+
+    def list_strategy_drift_events(self, company_id: int, limit: int = 200) -> list[dict[str, Any]]:
+        try:
+            response = (
+                self.client.table("strategy_drift_events")
+                .select("filing_id,previous_filing_id,filing_date,filing_type,dimension_key,theme_key,previous_score,current_score,delta,direction")
+                .eq("company_id", company_id)
+                .order("filing_date", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            return response.data or []
+        except Exception:
+            return []
+
+    def list_filings_by_ids(self, filing_ids: list[int]) -> dict[int, dict[str, Any]]:
+        if not filing_ids:
+            return {}
+        try:
+            response = self.client.table("filings").select("id,filing_type,filing_date").in_("id", filing_ids).execute()
+            rows = response.data or []
+            return {int(row["id"]): row for row in rows if row.get("id") is not None}
+        except Exception:
+            return {}
+
+    def list_strategy_extractions_for_filing(self, filing_id: int) -> list[dict[str, Any]]:
+        try:
+            section_rows = self.client.table("sections").select("id").eq("filing_id", filing_id).execute().data or []
+            section_ids = [row.get("id") for row in section_rows if row.get("id") is not None]
+            if not section_ids:
+                return []
+            response = (
+                self.client.table("strategy_extractions")
+                .select("id,extracted_data,confidence,section_id")
+                .in_("section_id", section_ids)
+                .order("id", desc=False)
+                .execute()
+            )
+            return response.data or []
+        except Exception:
+            return []
+
+    def list_company_extractions(self, company_id: int, limit: int = 1200) -> list[dict[str, Any]]:
         try:
             response = (
                 self.client.table("strategy_extractions")
@@ -74,7 +202,6 @@ class ProductRepository:
                             id,
                             filing_type,
                             filing_date,
-                            accession_number,
                             companies(id,ticker,name)
                         )
                     )
@@ -100,33 +227,16 @@ class ProductRepository:
         except Exception as exc:
             raise BackendError(f"Failed to load strategy extractions for company_id={company_id}: {exc}") from exc
 
-    def list_taxonomy_scores(self, strategy_extraction_ids: list[int]) -> list[dict[str, Any]]:
-        if not strategy_extraction_ids:
+    def list_section_taxonomy_scores(self, extraction_ids: list[int]) -> list[dict[str, Any]]:
+        if not extraction_ids:
             return []
         try:
             response = (
                 self.client.table("section_taxonomy_scores")
                 .select("strategy_extraction_id,dimension_key,label_key,score,source")
-                .in_("strategy_extraction_id", strategy_extraction_ids)
+                .in_("strategy_extraction_id", extraction_ids)
                 .execute()
             )
             return response.data or []
-        except Exception as exc:
-            raise BackendError("Failed to load taxonomy scores") from exc
-
-    def list_companies_by_tickers(self, tickers: list[str]) -> list[dict[str, Any]]:
-        if not tickers:
+        except Exception:
             return []
-        normalized = sorted({ticker.upper().strip() for ticker in tickers if ticker and ticker.strip()})
-        if not normalized:
-            return []
-        try:
-            response = (
-                self.client.table("companies")
-                .select("id,name,ticker")
-                .in_("ticker", normalized)
-                .execute()
-            )
-            return response.data or []
-        except Exception as exc:
-            raise BackendError(f"Failed to load companies for tickers={normalized}: {exc}") from exc

@@ -1,49 +1,33 @@
 # product-backend
 
-Ticker-centric API for packaging taxonomy extraction into partner-ready signal feeds.
+Product API backend for `product-ui`, compatible with the public strategy endpoints previously served by `extract-a`.
 
-## Why this design
+## Goal
 
-Platforms like eToro usually need compact, frequent, explainable updates that can power cards, feeds, and alerts. This API is built around that:
+This project is the read-focused backend for product surfaces (ticker pages, strategy cards, feed-style narratives), while `extract-a` remains the extraction/ingestion pipeline.
 
-- `snapshot`: latest high-value signal state for one ticker.
-- `timeline`: quarter-by-quarter narrative/drift evolution for one ticker.
-- `events`: cross-ticker high-signal drift events for feed ranking.
-- `taxonomy/catalog`: stable metadata to render labels consistently.
+## API compatibility for `product-ui`
 
-The payload is intentionally **not** a full analytical dump. It focuses on drift, signals, and narrative changes with confidence and severity.
+Implemented endpoints:
 
-## Data model assumptions
+- `GET /health`
+- `GET /taxonomy-catalog`
+- `GET /v1/taxonomy/catalog`
+- `GET /v1/strategy/snapshot?ticker=NVDA`
+- `GET /v1/strategy/trends?ticker=NVDA&theme_key=ai_automation`
+- `GET /v1/strategy/signals?ticker=NVDA&limit=50&latest_only=true`
+- `GET /v1/strategy/response-links?ticker=NVDA&limit=50&latest_only=true`
 
-This service reads from the existing extraction DB tables already used by `extract-a`:
+Response contracts are aligned with the `extract-a` public product API models used by `product-ui`.
 
-- `companies`
-- `filings`
-- `strategy_extractions`
-- `section_taxonomy_scores`
-- `company_quarter_strategy_states`
+## Data source strategy
 
-## Endpoints
+`product-backend` reads from Supabase tables. It uses this order:
 
-### `GET /health`
+1. Pre-aggregated strategy tables (`company_strategy_snapshots`, `company_strategy_signals`, `strategy_response_links`, `strategy_theme_timeseries`, `strategy_drift_events`, `company_strategy_scores`) when available.
+2. Fallback computation from lower-level extraction tables (`strategy_extractions`, `section_taxonomy_scores`, `sections`, `filings`) when aggregate tables are absent or empty.
 
-Health probe.
-
-### `GET /v1/taxonomy/catalog`
-
-Stable metadata for dimensions and labels.
-
-### `GET /v1/tickers/{ticker}/snapshot`
-
-Returns the latest quarter state, top taxonomy signals, and top drift signals.
-
-### `GET /v1/tickers/{ticker}/timeline?limit=8`
-
-Returns quarter points for a ticker with representative drift+narrative and top taxonomy signals per quarter.
-
-### `GET /v1/events?tickers=AAPL,MSFT,NVDA&min_severity=medium&limit=50`
-
-Returns cross-ticker drift events sorted by severity and score.
+This keeps the API functional even when full aggregation jobs have not run yet.
 
 ## Setup
 
@@ -53,7 +37,7 @@ Returns cross-ticker drift events sorted by severity and score.
 cp .env.example .env
 ```
 
-2. Set values in `.env`:
+2. Set required env vars in `.env`:
 
 - `SUPABASE_URL`
 - `SUPABASE_KEY`
@@ -67,14 +51,30 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8010
 ```
 
-## Product contract guidance
+## Deploy to Render
 
-For partner engagement products, these fields should be treated as primary:
+### Option A: Blueprint (`render.yaml`)
 
-- Drift intensity: `score`, `severity`, `tone_change`, `narrative_alignment`
-- Narrative payload: `short_narrative`, `key_changes`, `evidence_quotes`
-- Taxonomy payload: `dimension_key`, `label_key`, `score`
-- Reliability context: `confidence`
-- Temporal anchor: `filing_date`, `filing_type`
+1. Push this repo to GitHub.
+2. In Render: `New +` -> `Blueprint`.
+3. Select this repo and deploy.
+4. Set secret env vars in Render service settings:
+- `SUPABASE_URL`
+- `SUPABASE_KEY`
 
-This keeps the payload actionable for ranking, alerts, and concise UI cards.
+Render uses:
+- Build: `pip install -r requirements.txt`
+- Start: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- Health check: `/health`
+
+### Option B: Manual Web Service
+
+Use these values in Render:
+- Runtime: `Python`
+- Build Command: `pip install -r requirements.txt`
+- Start Command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- Health Check Path: `/health`
+
+Required env vars:
+- `SUPABASE_URL`
+- `SUPABASE_KEY`

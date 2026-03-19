@@ -12,12 +12,6 @@ services:
         value: taxonomy-product-api
       - key: API_VERSION
         value: 0.1.0
-      - key: DEFAULT_TIMELINE_LIMIT
-        value: "8"
-      - key: DEFAULT_EVENTS_LIMIT
-        value: "50"
-      - key: MAX_EVENTS_LOOKBACK_ROWS
-        value: "1200"
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_KEY

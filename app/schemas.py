@@ -1,97 +1,108 @@
-from typing import Literal
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
-Severity = Literal["low", "medium", "high"]
-ToneChange = Literal["accelerating", "reevaluating", "exited", "stable"]
-NarrativeAlignment = Literal["confirms", "contradicts", "extends"]
+class ErrorResponse(BaseModel):
+    detail: str
 
 
 class HealthResponse(BaseModel):
     status: str = "ok"
 
 
-class TaxonomyLabelMeta(BaseModel):
-    key: str
-    display_name: str
-    description: str
-
-
-class TaxonomyDimensionMeta(BaseModel):
-    key: str
-    display_name: str
-    description: str
-    labels: list[TaxonomyLabelMeta]
-
-
 class TaxonomyCatalogResponse(BaseModel):
-    dimensions: list[TaxonomyDimensionMeta]
+    catalog: dict[str, dict[str, dict[str, str]]]
 
 
-class TaxonomySignal(BaseModel):
+class ClientStrategyThemeLabel(BaseModel):
+    key: str
+    label: str
+    dimension_key: str | None = None
+    score: float | None = None
+    evidence_count: int | None = None
+    evidence_quotes: list[str] | None = None
+    persistence_count: int | None = None
+    persistence_score: float | None = None
+    score_components: dict[str, Any] | None = None
+
+
+class ClientStrategySnapshotResponse(BaseModel):
+    ticker: str
+    filing_date: str
+    filing_type: str
+    dominant_themes: list[ClientStrategyThemeLabel]
+    emerging_themes: list[ClientStrategyThemeLabel]
+    declining_themes: list[ClientStrategyThemeLabel]
+
+
+class ClientStrategyTrendPoint(BaseModel):
+    quarter: str
+    score: float
+
+
+class ClientStrategyTrendSeries(BaseModel):
+    theme_key: str
     dimension_key: str
-    label_key: str
-    score: float = Field(..., ge=0.0, le=1.0)
-    source: str
+    label: str
+    series: list[ClientStrategyTrendPoint]
 
 
-class DriftSignal(BaseModel):
-    section_name: str
-    score: float = Field(..., ge=0.0, le=1.0)
-    severity: Severity
-    tone_change: ToneChange
-    narrative_alignment: NarrativeAlignment
-    pivot_within_90d: bool
-    weakness_count: int = Field(..., ge=0)
-    confidence: float = Field(..., ge=0.0, le=1.0)
-    short_narrative: str
-    key_changes: list[str]
-    evidence_quotes: list[str]
-
-
-class QuarterState(BaseModel):
-    filing_id: int
-    filing_type: str
-    filing_date: str
-    shift_level: Severity | None = None
-    net_direction: ToneChange | None = None
-    contradictions_count: int = Field(..., ge=0)
-    pivots_count: int = Field(..., ge=0)
-    changed_sections_count: int = Field(..., ge=0)
-
-
-class TickerSnapshotResponse(BaseModel):
+class ClientStrategyTrendsResponse(BaseModel):
     ticker: str
-    company_id: int
-    latest_quarter: QuarterState | None = None
-    taxonomy_top_signals: list[TaxonomySignal]
-    top_drift_signals: list[DriftSignal]
+    theme_key: str | None = None
+    series: list[ClientStrategyTrendPoint] = []
+    themes: list[ClientStrategyTrendSeries] = []
 
 
-class QuarterNarrativePoint(BaseModel):
-    quarter: QuarterState
-    top_drift: DriftSignal | None = None
-    top_taxonomy_signals: list[TaxonomySignal]
-
-
-class TickerTimelineResponse(BaseModel):
-    ticker: str
-    company_id: int
-    points: list[QuarterNarrativePoint]
-
-
-class CrossTickerEvent(BaseModel):
-    ticker: str
-    company_id: int
+class ClientStrategySignal(BaseModel):
+    type: str
+    theme_key: str
+    theme_label: str
+    dimension_key: str | None = None
+    filing_id: int | None = None
+    direction: str | None = None
+    confidence: float
+    title: str
+    description: str
+    evidence_summary: str | None = None
     filing_date: str
     filing_type: str
-    drift: DriftSignal
+    evidence_quote: str | None = None
+    current_score: float | None = None
+    previous_score: float | None = None
+    delta: float | None = None
+    delta_severity: str | None = None
+    comparison_basis: str | None = None
+    persistence_count: int | None = None
+    persistence_score: float | None = None
+    score_components: dict[str, Any] | None = None
 
 
-class EventsFeedResponse(BaseModel):
-    events: list[CrossTickerEvent]
+class ClientStrategySignalsResponse(BaseModel):
+    ticker: str
+    signals: list[ClientStrategySignal]
 
 
-class ErrorResponse(BaseModel):
-    detail: str
+class ClientStrategyResponseLink(BaseModel):
+    risk: str
+    response: str
+    direction: str
+    quarter: str
+    confidence: float
+    link_strength: float | None = None
+    summary: str
+    filing_date: str
+    filing_type: str
+    risk_score: float
+    response_score: float
+    risk_delta: float
+    response_delta: float
+    evidence_quote_risk: str | None = None
+    evidence_quote_response: str | None = None
+    confidence_reason: str | None = None
+
+
+class ClientStrategyResponseLinksResponse(BaseModel):
+    ticker: str
+    links: list[ClientStrategyResponseLink]
