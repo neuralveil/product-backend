@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ErrorResponse(BaseModel):
@@ -106,3 +106,17 @@ class ClientStrategyResponseLink(BaseModel):
 class ClientStrategyResponseLinksResponse(BaseModel):
     ticker: str
     links: list[ClientStrategyResponseLink]
+
+
+class FeedbackCreateRequest(BaseModel):
+    rating: str | None = Field(default=None, pattern="^(positive|neutral|negative)$")
+    tags: list[str] = Field(default_factory=list, max_length=10)
+    note: str | None = Field(default=None, max_length=2000)
+    path: str | None = Field(default=None, max_length=500)
+    submitted_at: str | None = Field(default=None, max_length=100)
+    source: str | None = Field(default=None, max_length=100)
+
+
+class FeedbackCreateResponse(BaseModel):
+    status: str = "ok"
+    feedback_id: int

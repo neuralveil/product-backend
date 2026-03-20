@@ -240,3 +240,29 @@ class ProductRepository:
             return response.data or []
         except Exception:
             return []
+
+    def create_feedback(
+        self,
+        *,
+        rating: str | None,
+        tags: list[str],
+        note: str | None,
+        path: str | None,
+        source: str | None,
+        submitted_at: str | None,
+        user_agent: str | None,
+    ) -> dict[str, Any]:
+        payload = {
+            "rating": rating,
+            "tags": tags,
+            "note": note,
+            "path": path,
+            "source": source,
+            "submitted_at": submitted_at,
+            "user_agent": user_agent,
+        }
+        try:
+            response = self.client.table("product_feedback").insert(payload).execute()
+            return (response.data or [{}])[0]
+        except Exception as exc:
+            raise BackendError(f"Failed to create feedback row: {exc}") from exc

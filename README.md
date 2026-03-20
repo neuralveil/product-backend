@@ -17,8 +17,37 @@ Implemented endpoints:
 - `GET /v1/strategy/trends?ticker=NVDA&theme_key=ai_automation`
 - `GET /v1/strategy/signals?ticker=NVDA&limit=50&latest_only=true`
 - `GET /v1/strategy/response-links?ticker=NVDA&limit=50&latest_only=true`
+- `POST /v1/feedback`
 
 Response contracts are aligned with the `extract-a` public product API models used by `product-ui`.
+
+## Feedback API
+
+Simple feedback ingestion endpoint for `product-ui`:
+
+- `POST /v1/feedback`
+
+Example request body:
+
+```json
+{
+  "rating": "positive",
+  "tags": ["Great insights", "Missing context"],
+  "note": "Love the evidence cards, would like more sector context.",
+  "path": "/ticker/AMZN",
+  "source": "product-ui",
+  "submitted_at": "2026-03-20T18:20:00.000Z"
+}
+```
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "feedback_id": 123
+}
+```
 
 ## Data source strategy
 
@@ -78,3 +107,9 @@ Use these values in Render:
 Required env vars:
 - `SUPABASE_URL`
 - `SUPABASE_KEY`
+
+## Supabase table setup for feedback
+
+Run this SQL once in your Supabase SQL editor:
+
+- `sql/product_feedback.sql`

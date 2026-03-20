@@ -6,6 +6,8 @@ from typing import Any
 from app.errors import NotFoundError
 from app.repository import ProductRepository
 from app.schemas import (
+    FeedbackCreateRequest,
+    FeedbackCreateResponse,
     ClientStrategyResponseLinksResponse,
     ClientStrategySignal,
     ClientStrategySignalsResponse,
@@ -309,6 +311,24 @@ class ProductService:
             ticker=str(company.get("ticker", ticker.upper())),
             links=links,
         )
+
+    def create_feedback(
+        self,
+        payload: FeedbackCreateRequest,
+        *,
+        user_agent: str | None = None,
+    ) -> FeedbackCreateResponse:
+        row = self.repo.create_feedback(
+            rating=payload.rating,
+            tags=payload.tags,
+            note=payload.note.strip() if isinstance(payload.note, str) else None,
+            path=payload.path.strip() if isinstance(payload.path, str) else None,
+            source=payload.source.strip() if isinstance(payload.source, str) else None,
+            submitted_at=payload.submitted_at,
+            user_agent=user_agent,
+        )
+        feedback_id = int(row.get("id", 0) or 0)
+        return FeedbackCreateResponse(status="ok", feedback_id=feedback_id)
 
     def _build_fallback_snapshot(self, company_id: int) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[tuple[str, str], dict[str, Any]]]:
         history_rows = self.repo.list_company_strategy_scores_all(company_id, limit=1200)

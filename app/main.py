@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -10,6 +10,8 @@ from app.schemas import (
     ClientStrategySnapshotResponse,
     ClientStrategyTrendsResponse,
     ErrorResponse,
+    FeedbackCreateRequest,
+    FeedbackCreateResponse,
     HealthResponse,
     TaxonomyCatalogResponse,
 )
@@ -110,6 +112,22 @@ def get_strategy_response_links(
 ):
     try:
         return service.get_strategy_response_links(ticker=ticker, limit=limit, latest_only=latest_only)
+    except Exception as exc:
+        http_exc = to_http_error(exc)
+        return JSONResponse(status_code=http_exc.status_code, content={"detail": str(http_exc.detail)})
+
+
+@app.post(
+    "/v1/feedback",
+    response_model=FeedbackCreateResponse,
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+)
+def post_feedback(payload: FeedbackCreateRequest, request: Request):
+    try:
+        return service.create_feedback(
+            payload,
+            user_agent=request.headers.get("user-agent"),
+        )
     except Exception as exc:
         http_exc = to_http_error(exc)
         return JSONResponse(status_code=http_exc.status_code, content={"detail": str(http_exc.detail)})
