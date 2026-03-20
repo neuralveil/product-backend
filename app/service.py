@@ -6,6 +6,8 @@ from typing import Any
 from app.errors import NotFoundError
 from app.repository import ProductRepository
 from app.schemas import (
+    ClientDominantTheme,
+    ClientDominantThemesResponse,
     FeedbackCreateRequest,
     FeedbackCreateResponse,
     ClientStrategyResponseLinksResponse,
@@ -39,6 +41,14 @@ RISK_RESPONSE_MAP: dict[str, list[str]] = {
         "ai_infrastructure_investment",
         "strategic_partnership",
     ],
+}
+
+GENERIC_THEME_KEYS = {"international_expansion", "cost_efficiency"}
+HIGH_SIGNAL_THEME_BOOSTS: dict[str, float] = {
+    "ai_automation": 1.15,
+    "ai_infrastructure_investment": 1.12,
+    "platform_ecosystem": 1.1,
+    "product_expansion": 1.08,
 }
 
 
@@ -102,6 +112,61 @@ class ProductService:
             dominant_themes=build_theme_list(list(snapshot.get("dominant_themes") or [])),
             emerging_themes=build_theme_list(list(snapshot.get("emerging_themes") or [])),
             declining_themes=build_theme_list(list(snapshot.get("declining_themes") or [])),
+        )
+
+    def get_dominant_themes(self, ticker: str, limit: int) -> ClientDominantThemesResponse:
+        company = self.repo.get_company_by_ticker(ticker)
+        company_id = int(company["id"])
+
+        snapshot = self.repo.get_latest_strategy_snapshot(company_id)
+        if not snapshot:
+            raise NotFoundError(f"No strategy snapshot for {ticker.upper()}")
+        filing_id = int(snapshot.get("filing_id", 0) or 0)
+        if not filing_id:
+            raise NotFoundError(f"No filing found for latest snapshot of {ticker.upper()}")
+
+        score_rows = self.repo.list_company_strategy_scores_for_filing(company_id, filing_id)
+        if not score_rows:
+            raise NotFoundError(f"No strategy scores for latest snapshot of {ticker.upper()}")
+
+        previous_scores = self.repo.list_company_strategy_scores_all(company_id, limit=1200)
+        previous_scores = [
+            row
+            for row in previous_scores
+            if str(row.get("filing_date", "")) < str(snapshot.get("filing_date", ""))
+        ]
+        persistence_map = self._build_persistence_map(company_id)
+        ranked = self._rank_dominant_themes(score_rows=score_rows, previous_scores=previous_scores)[:limit]
+
+        themes: list[ClientDominantTheme] = []
+        for row in ranked:
+            dimension_key = row.get("dimension_key")
+            theme_key = str(row.get("theme_key", ""))
+            persistence = persistence_map.get((str(dimension_key or ""), theme_key), {})
+            themes.append(
+                ClientDominantTheme(
+                    key=theme_key,
+                    label=label_display_name(theme_key),
+                    dimension_key=str(dimension_key) if dimension_key else None,
+                    score=float(row.get("dominant_score", 0) or 0),
+                    strength=self._dominant_strength(float(row.get("dominant_score", 0) or 0)),
+                    persistence_count=persistence.get("persistence_count"),
+                    persistence_score=persistence.get("persistence_score"),
+                    score_components={
+                        "base_score": row.get("base_score"),
+                        "persistence_score": row.get("persistence_score"),
+                        "frequency_score": row.get("frequency_score"),
+                        "theme_boost": row.get("theme_boost"),
+                        "generic_penalty": row.get("generic_penalty"),
+                    },
+                )
+            )
+
+        return ClientDominantThemesResponse(
+            ticker=str(company.get("ticker", ticker.upper())),
+            filing_date=str(snapshot.get("filing_date", "")),
+            filing_type=str(snapshot.get("filing_type", "")),
+            dominant_themes=themes,
         )
 
     def get_strategy_trends(self, ticker: str, theme_key: str | None, limit: int) -> ClientStrategyTrendsResponse:
@@ -497,6 +562,99 @@ class ProductService:
             )
         out.sort(key=lambda row: str(row.get("quarter", "")))
         return out
+
+    def _rank_dominant_themes(
+        self,
+        *,
+        score_rows: list[dict[str, Any]],
+        previous_scores: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        history: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for row in previous_scores:
+            key = (str(row.get("dimension_key", "")), str(row.get("theme_key", "")))
+            if not key[0] or not key[1]:
+                continue
+            history[key].append(row)
+        for key in history:
+            history[key].sort(key=lambda r: str(r.get("filing_date", "")), reverse=True)
+
+        out: list[dict[str, Any]] = []
+        for row in score_rows:
+            dimension = str(row.get("dimension_key", ""))
+            theme = str(row.get("theme_key", ""))
+            if not dimension or not theme:
+                continue
+            base_score = float(row.get("score", 0) or 0)
+            quotes = [str(q) for q in list(row.get("evidence_quotes") or []) if isinstance(q, str)]
+            prior_rows = history.get((dimension, theme), [])
+            prior_above = sum(1 for pr in prior_rows if float(pr.get("score", 0) or 0) >= 0.2)
+            frequency_score = min(1.0, (prior_above + (1 if base_score >= 0.2 else 0)) / 6.0)
+
+            persistence_count = 1 if base_score >= 0.2 else 0
+            for pr in prior_rows[:3]:
+                if float(pr.get("score", 0) or 0) >= 0.2:
+                    persistence_count += 1
+                else:
+                    break
+            persistence_score = min(1.0, persistence_count / 4.0)
+
+            boost = HIGH_SIGNAL_THEME_BOOSTS.get(theme, 1.0)
+            penalty = 1.0
+            if theme in GENERIC_THEME_KEYS and not self._is_concrete_generic_theme(theme, quotes):
+                penalty = 0.72
+
+            raw = (0.55 * base_score) + (0.25 * persistence_score) + (0.2 * frequency_score)
+            dominant_score = max(0.0, min(1.0, raw * boost * penalty))
+            out.append(
+                {
+                    "dimension_key": dimension,
+                    "theme_key": theme,
+                    "dominant_score": round(dominant_score, 3),
+                    "base_score": round(base_score, 3),
+                    "persistence_score": round(persistence_score, 3),
+                    "frequency_score": round(frequency_score, 3),
+                    "theme_boost": round(boost, 3),
+                    "generic_penalty": round(penalty, 3),
+                }
+            )
+        out.sort(key=lambda r: float(r.get("dominant_score", 0) or 0), reverse=True)
+        return out
+
+    def _is_concrete_generic_theme(self, theme_key: str, quotes: list[str]) -> bool:
+        text = " ".join(q.lower() for q in quotes)
+        if not text:
+            return False
+        if any(ch.isdigit() for ch in text):
+            return True
+        if theme_key == "international_expansion":
+            geo_terms = [
+                "international",
+                "global",
+                "europe",
+                "asia",
+                "apac",
+                "emea",
+                "latin america",
+                "united states",
+                "u.s.",
+                "china",
+                "india",
+                "japan",
+            ]
+            action_terms = ["expand", "expansion", "enter", "launch", "open", "build", "invest", "scale", "grow"]
+            return any(t in text for t in geo_terms) and any(t in text for t in action_terms)
+        if theme_key == "cost_efficiency":
+            action_terms = ["reduce", "optimization", "optimiz", "restructure", "automation", "efficien", "productivity"]
+            object_terms = ["cost", "expense", "headcount", "fulfillment", "logistics", "operations", "procurement"]
+            return any(t in text for t in action_terms) and any(t in text for t in object_terms)
+        return True
+
+    def _dominant_strength(self, score: float) -> str:
+        if score >= 0.8:
+            return "strong"
+        if score >= 0.55:
+            return "moderate"
+        return "emerging"
 
     def _build_fallback_drift_rows(self, company_id: int) -> list[dict[str, Any]]:
         rows = self.repo.list_company_strategy_scores_all(company_id, limit=1200)

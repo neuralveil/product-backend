@@ -108,6 +108,24 @@ class ClientStrategyResponseLinksResponse(BaseModel):
     links: list[ClientStrategyResponseLink]
 
 
+class ClientDominantTheme(BaseModel):
+    key: str
+    label: str
+    dimension_key: str | None = None
+    score: float
+    strength: str
+    persistence_count: int | None = None
+    persistence_score: float | None = None
+    score_components: dict[str, Any] | None = None
+
+
+class ClientDominantThemesResponse(BaseModel):
+    ticker: str
+    filing_date: str
+    filing_type: str
+    dominant_themes: list[ClientDominantTheme]
+
+
 class FeedbackCreateRequest(BaseModel):
     rating: str | None = Field(default=None, pattern="^(positive|neutral|negative)$")
     tags: list[str] = Field(default_factory=list, max_length=10)

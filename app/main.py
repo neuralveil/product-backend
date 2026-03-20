@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.errors import to_http_error
 from app.schemas import (
+    ClientDominantThemesResponse,
     ClientStrategyResponseLinksResponse,
     ClientStrategySignalsResponse,
     ClientStrategySnapshotResponse,
@@ -48,6 +49,22 @@ def get_taxonomy_catalog_legacy():
 def get_taxonomy_catalog_v1():
     try:
         return service.get_taxonomy_catalog()
+    except Exception as exc:
+        http_exc = to_http_error(exc)
+        return JSONResponse(status_code=http_exc.status_code, content={"detail": str(http_exc.detail)})
+
+
+@app.get(
+    "/v1/strategy/dominant",
+    response_model=ClientDominantThemesResponse,
+    responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+)
+def get_strategy_dominant(
+    ticker: str,
+    limit: int = Query(default=3, ge=1, le=10),
+):
+    try:
+        return service.get_dominant_themes(ticker=ticker, limit=limit)
     except Exception as exc:
         http_exc = to_http_error(exc)
         return JSONResponse(status_code=http_exc.status_code, content={"detail": str(http_exc.detail)})
