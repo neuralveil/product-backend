@@ -41,6 +41,24 @@ class ProductRepository:
         except Exception as exc:
             raise BackendError(f"Failed to load company for ticker {normalized_ticker}: {exc}") from exc
 
+    def search_companies(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        search = query.strip()
+        if not search:
+            return []
+        escaped = search.replace(",", " ")
+        try:
+            response = (
+                self.client.table("companies")
+                .select("ticker,name")
+                .or_(f"name.ilike.%{escaped}%,ticker.ilike.%{escaped}%")
+                .order("ticker")
+                .limit(limit)
+                .execute()
+            )
+            return response.data or []
+        except Exception as exc:
+            raise BackendError(f"Failed to search companies for query '{query}': {exc}") from exc
+
     def get_latest_strategy_snapshot(self, company_id: int) -> dict[str, Any] | None:
         try:
             response = (

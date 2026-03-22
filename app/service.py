@@ -8,6 +8,8 @@ from app.repository import ProductRepository
 from app.schemas import (
     ClientDominantTheme,
     ClientDominantThemesResponse,
+    CompanySearchResponse,
+    CompanySearchResult,
     FeedbackCreateRequest,
     FeedbackCreateResponse,
     ClientStrategyResponseLinksResponse,
@@ -58,6 +60,18 @@ class ProductService:
 
     def get_taxonomy_catalog(self) -> TaxonomyCatalogResponse:
         return TaxonomyCatalogResponse(catalog=get_taxonomy_catalog_detailed())
+
+    def search_companies(self, query: str, limit: int) -> CompanySearchResponse:
+        rows = self.repo.search_companies(query, limit=limit)
+        items = [
+            CompanySearchResult(
+                ticker=str(row.get("ticker", "")).upper(),
+                name=str(row.get("name", "")),
+            )
+            for row in rows
+            if row.get("ticker")
+        ]
+        return CompanySearchResponse(items=items)
 
     def get_strategy_snapshot(self, ticker: str) -> ClientStrategySnapshotResponse:
         company = self.repo.get_company_by_ticker(ticker)

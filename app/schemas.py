@@ -15,6 +15,15 @@ class TaxonomyCatalogResponse(BaseModel):
     catalog: dict[str, dict[str, dict[str, str]]]
 
 
+class CompanySearchResult(BaseModel):
+    ticker: str
+    name: str
+
+
+class CompanySearchResponse(BaseModel):
+    items: list[CompanySearchResult]
+
+
 class ClientStrategyThemeLabel(BaseModel):
     key: str
     label: str

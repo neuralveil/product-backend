@@ -6,6 +6,7 @@ from app.config import settings
 from app.errors import to_http_error
 from app.schemas import (
     ClientDominantThemesResponse,
+    CompanySearchResponse,
     ClientStrategyResponseLinksResponse,
     ClientStrategySignalsResponse,
     ClientStrategySnapshotResponse,
@@ -49,6 +50,22 @@ def get_taxonomy_catalog_legacy():
 def get_taxonomy_catalog_v1():
     try:
         return service.get_taxonomy_catalog()
+    except Exception as exc:
+        http_exc = to_http_error(exc)
+        return JSONResponse(status_code=http_exc.status_code, content={"detail": str(http_exc.detail)})
+
+
+@app.get(
+    "/v1/companies/search",
+    response_model=CompanySearchResponse,
+    responses={500: {"model": ErrorResponse}},
+)
+def search_companies(
+    q: str = Query(..., min_length=1, max_length=100),
+    limit: int = Query(default=10, ge=1, le=25),
+):
+    try:
+        return service.search_companies(query=q, limit=limit)
     except Exception as exc:
         http_exc = to_http_error(exc)
         return JSONResponse(status_code=http_exc.status_code, content={"detail": str(http_exc.detail)})
