@@ -23,6 +23,9 @@ from app.schemas import (
     TaxonomyCatalogResponse,
 )
 from app.taxonomy import (
+    ACTION_KEYWORDS,
+    DIRECTION_KEYWORDS,
+    RISK_POSTURE_KEYWORDS,
     TAXONOMY_CATALOG,
     coerce_theme_row,
     flatten_allowed_dimensions,
@@ -169,6 +172,7 @@ class ProductService:
                     strength=self._dominant_strength(float(row.get("dominant_score", 0) or 0)),
                     evidence_quote=taxonomy_decision.get("evidence_quote"),
                     evidence_quotes=taxonomy_decision.get("evidence_quotes"),
+                    evidence_source=taxonomy_decision.get("evidence_source"),
                     why_selected=self._public_justification(
                         theme_label=label_display_name(theme_key),
                         reason=taxonomy_decision.get("why_selected"),
@@ -698,9 +702,47 @@ class ProductService:
 
     def _build_taxonomy_decision_map(self, extraction_rows: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
         out: dict[tuple[str, str], dict[str, Any]] = {}
+        inferred_out: dict[tuple[str, str], dict[str, Any]] = {}
+        keyword_maps = {
+            "strategy_direction": DIRECTION_KEYWORDS,
+            "strategy_action": ACTION_KEYWORDS,
+            "risk_posture": RISK_POSTURE_KEYWORDS,
+        }
+
+        def split_sentences(text: str) -> list[str]:
+            raw = (text or "").replace("\n", " ")
+            chunks = [part.strip() for part in raw.replace("?", ".").replace("!", ".").split(".")]
+            return [chunk for chunk in chunks if len(chunk.split()) >= 5]
+
+        def best_sentence_for_theme(theme: str, dimension: str, final_payload: dict[str, Any]) -> str | None:
+            allowed_fields = (
+                ["risk_signals"]
+                if dimension == "risk_posture"
+                else ["growth_strategy", "cost_strategy", "innovation_strategy", "geographic_expansion", "capital_allocation"]
+            )
+            terms = [t.lower() for t in keyword_maps.get(dimension, {}).get(theme, [])]
+            candidates: list[str] = []
+            for field in allowed_fields:
+                value = final_payload.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    continue
+                candidates.extend(split_sentences(value))
+            if not candidates:
+                return None
+            if terms:
+                ranked = sorted(
+                    candidates,
+                    key=lambda sentence: sum(1 for term in terms if term in sentence.lower()),
+                    reverse=True,
+                )
+                if ranked and sum(1 for term in terms if term in ranked[0].lower()) > 0:
+                    return ranked[0]
+            return max(candidates, key=len)
+
         for row in extraction_rows:
             extracted = row.get("extracted_data") or {}
             taxonomy = extracted.get("taxonomy") or {}
+            final_payload = extracted.get("final") or {}
             if not isinstance(taxonomy, dict):
                 continue
             for dimension, labels in taxonomy.items():
@@ -733,9 +775,29 @@ class ProductService:
                     out[key] = {
                         "evidence_quote": evidence_quote,
                         "evidence_quotes": evidence_quotes[:3],
+                        "evidence_source": "taxonomy_quote" if evidence_quote else None,
                         "why_selected": str(label_row.get("why_selected", "")).strip() or None,
                         "_score": score,
                     }
+
+                    if not evidence_quote and isinstance(final_payload, dict):
+                        inferred_sentence = best_sentence_for_theme(theme_key, str(dimension), final_payload)
+                        if inferred_sentence:
+                            inferred_out[key] = {
+                                "evidence_quote": inferred_sentence,
+                                "evidence_quotes": [inferred_sentence],
+                                "evidence_source": "inferred_extraction",
+                                "why_selected": f"The extraction summary for {label_display_name(theme_key).lower()} contains concrete supporting language.",
+                                "_score": score,
+                            }
+
+        for key, inferred in inferred_out.items():
+            existing = out.get(key)
+            if existing is None:
+                out[key] = inferred
+                continue
+            if not existing.get("evidence_quote"):
+                out[key] = inferred
 
         for value in out.values():
             value.pop("_score", None)

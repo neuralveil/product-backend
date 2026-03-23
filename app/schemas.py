@@ -125,6 +125,7 @@ class ClientDominantTheme(BaseModel):
     strength: str
     evidence_quote: str | None = None
     evidence_quotes: list[str] | None = None
+    evidence_source: str | None = None
     why_selected: str | None = None
     persistence_count: int | None = None
     persistence_score: float | None = None
