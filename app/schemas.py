@@ -123,6 +123,9 @@ class ClientDominantTheme(BaseModel):
     dimension_key: str | None = None
     score: float
     strength: str
+    evidence_quote: str | None = None
+    evidence_quotes: list[str] | None = None
+    why_selected: str | None = None
     persistence_count: int | None = None
     persistence_score: float | None = None
     score_components: dict[str, Any] | None = None

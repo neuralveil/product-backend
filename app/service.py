@@ -114,7 +114,7 @@ class ProductService:
                         evidence_quotes=list(meta.get("evidence_quotes") or []),
                         persistence_count=persistence.get("persistence_count"),
                         persistence_score=persistence.get("persistence_score"),
-                        score_components=score_components_map.get((str(dimension_key or ""), key)),
+                        score_components=None,
                     )
                 )
             return out
@@ -142,6 +142,8 @@ class ProductService:
         score_rows = self.repo.list_company_strategy_scores_for_filing(company_id, filing_id)
         if not score_rows:
             raise NotFoundError(f"No strategy scores for latest snapshot of {ticker.upper()}")
+        extraction_rows = self.repo.list_strategy_extractions_for_filing(filing_id)
+        taxonomy_decision_map = self._build_taxonomy_decision_map(extraction_rows)
 
         previous_scores = self.repo.list_company_strategy_scores_all(company_id, limit=1200)
         previous_scores = [
@@ -157,6 +159,7 @@ class ProductService:
             dimension_key = row.get("dimension_key")
             theme_key = str(row.get("theme_key", ""))
             persistence = persistence_map.get((str(dimension_key or ""), theme_key), {})
+            taxonomy_decision = taxonomy_decision_map.get((str(dimension_key or ""), theme_key), {})
             themes.append(
                 ClientDominantTheme(
                     key=theme_key,
@@ -164,15 +167,15 @@ class ProductService:
                     dimension_key=str(dimension_key) if dimension_key else None,
                     score=float(row.get("dominant_score", 0) or 0),
                     strength=self._dominant_strength(float(row.get("dominant_score", 0) or 0)),
+                    evidence_quote=taxonomy_decision.get("evidence_quote"),
+                    evidence_quotes=taxonomy_decision.get("evidence_quotes"),
+                    why_selected=self._public_justification(
+                        theme_label=label_display_name(theme_key),
+                        reason=taxonomy_decision.get("why_selected"),
+                    ),
                     persistence_count=persistence.get("persistence_count"),
                     persistence_score=persistence.get("persistence_score"),
-                    score_components={
-                        "base_score": row.get("base_score"),
-                        "persistence_score": row.get("persistence_score"),
-                        "frequency_score": row.get("frequency_score"),
-                        "theme_boost": row.get("theme_boost"),
-                        "generic_penalty": row.get("generic_penalty"),
-                    },
+                    score_components=None,
                 )
             )
 
@@ -328,7 +331,7 @@ class ProductService:
                     comparison_basis=self._comparison_basis(previous_filing_type),
                     persistence_count=persistence.get("persistence_count"),
                     persistence_score=persistence.get("persistence_score"),
-                    score_components=score_components,
+                    score_components=None,
                 )
             )
 
@@ -669,6 +672,74 @@ class ProductService:
         if score >= 0.55:
             return "moderate"
         return "emerging"
+
+    def _public_justification(self, *, theme_label: str, reason: str | None) -> str:
+        raw = (reason or "").strip()
+        if not raw:
+            return f"Recent filing language consistently supports emphasis on {theme_label.lower()}."
+        lowered = raw.lower()
+        blocked_terms = [
+            "taxonomy",
+            "label",
+            "classifier",
+            "model",
+            "score",
+            "threshold",
+            "keyword",
+            "gate",
+            "prompt",
+            "schema",
+            "pass a",
+            "pass b",
+        ]
+        if any(term in lowered for term in blocked_terms):
+            return f"Recent filing language consistently supports emphasis on {theme_label.lower()}."
+        return raw
+
+    def _build_taxonomy_decision_map(self, extraction_rows: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
+        out: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in extraction_rows:
+            extracted = row.get("extracted_data") or {}
+            taxonomy = extracted.get("taxonomy") or {}
+            if not isinstance(taxonomy, dict):
+                continue
+            for dimension, labels in taxonomy.items():
+                if not isinstance(labels, list):
+                    continue
+                for label_row in labels:
+                    if not isinstance(label_row, dict):
+                        continue
+                    theme_key = str(label_row.get("label", "")).strip()
+                    if not theme_key:
+                        continue
+                    key = (str(dimension), theme_key)
+                    try:
+                        score = float(label_row.get("score", 0) or 0)
+                    except Exception:
+                        score = 0.0
+                    existing = out.get(key)
+                    if existing is not None and score <= float(existing.get("_score", 0) or 0):
+                        continue
+
+                    evidence_quote = str(label_row.get("evidence_quote", "")).strip() or None
+                    evidence_quotes = [
+                        str(q).strip()
+                        for q in (label_row.get("evidence_quotes") or [])
+                        if isinstance(q, str) and str(q).strip()
+                    ]
+                    if evidence_quote and evidence_quote not in evidence_quotes:
+                        evidence_quotes = [evidence_quote, *evidence_quotes]
+
+                    out[key] = {
+                        "evidence_quote": evidence_quote,
+                        "evidence_quotes": evidence_quotes[:3],
+                        "why_selected": str(label_row.get("why_selected", "")).strip() or None,
+                        "_score": score,
+                    }
+
+        for value in out.values():
+            value.pop("_score", None)
+        return out
 
     def _build_fallback_drift_rows(self, company_id: int) -> list[dict[str, Any]]:
         rows = self.repo.list_company_strategy_scores_all(company_id, limit=1200)
