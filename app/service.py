@@ -96,7 +96,7 @@ class ProductService:
             quote = (evidence.quote or "").strip()
             if not quote:
                 return
-            if any(existing.quote.strip() == quote for existing in theme.evidence):
+            if any(existing.quote.strip().lower() == quote.lower() for existing in theme.evidence):
                 return
             theme.evidence.append(evidence)
 
@@ -149,8 +149,11 @@ class ProductService:
             theme = ensure_theme(row.key, row.label, row.dimension_key)
             theme.score = max(theme.score or 0.0, float(row.score or 0.0))
             theme.dimension_key = theme.dimension_key or row.dimension_key
-            if row.why_selected and (not theme.source_insight or len(row.why_selected) > len(theme.source_insight)):
-                theme.source_insight = row.why_selected
+            if row.why_selected:
+                cleaned_why = str(row.why_selected).strip()
+                if cleaned_why and not self._is_generic_ui_text(cleaned_why):
+                    if not theme.source_insight or len(cleaned_why) > len(theme.source_insight):
+                        theme.source_insight = cleaned_why
             for quote in row.evidence_quotes or ([] if not row.evidence_quote else [row.evidence_quote]):
                 cleaned = str(quote).strip()
                 if not cleaned:
@@ -178,8 +181,11 @@ class ProductService:
             theme.dimension_key = theme.dimension_key or row.dimension_key
             if row.direction and (theme.direction is None or (row.current_score or row.confidence or 0) >= (theme.score or 0)):
                 theme.direction = row.direction
-            if row.description and (not theme.source_insight or len(row.description) > len(theme.source_insight)):
-                theme.source_insight = row.description
+            if row.description:
+                cleaned_description = str(row.description).strip()
+                if cleaned_description and not self._is_generic_ui_text(cleaned_description):
+                    if not theme.source_insight or len(cleaned_description) > len(theme.source_insight):
+                        theme.source_insight = cleaned_description
             if row.delta is not None and (theme.delta is None or abs(row.delta) > abs(theme.delta)):
                 theme.delta = row.delta
                 theme.delta_severity = row.delta_severity
@@ -205,7 +211,7 @@ class ProductService:
             response_key = self._canonical_theme_key(row.response)
             risk_theme = aggregated.get(risk_key)
             response_theme = aggregated.get(response_key)
-            if risk_theme and row.evidence_quote_risk and not risk_theme.evidence:
+            if risk_theme and row.evidence_quote_risk and not any(item.source_kind == "quote" for item in risk_theme.evidence):
                 add_evidence(
                     risk_theme,
                     UiThemeEvidence(
@@ -215,7 +221,7 @@ class ProductService:
                         source_kind="quote",
                     ),
                 )
-            if response_theme and row.evidence_quote_response and not response_theme.evidence:
+            if response_theme and row.evidence_quote_response and not any(item.source_kind == "quote" for item in response_theme.evidence):
                 add_evidence(
                     response_theme,
                     UiThemeEvidence(
@@ -227,15 +233,20 @@ class ProductService:
                 )
 
         themes = list(aggregated.values())
+        qualified_themes: list[UiTheme] = []
         for theme in themes:
             # If evidence is missing or inferred-only, enrich with most recent direct quotes from history.
             has_direct_quote = any(item.source_kind == "quote" for item in theme.evidence)
             if (not theme.evidence or not has_direct_quote) and history_evidence_by_theme.get(theme.id):
                 for item in history_evidence_by_theme[theme.id][:2]:
                     add_evidence(theme, item)
+            self._sort_theme_evidence(theme)
             if theme.evidence_count is None:
                 theme.evidence_count = len(theme.evidence) if theme.evidence else None
+            if self._is_displayable_ui_theme(theme):
+                qualified_themes.append(theme)
 
+        themes = qualified_themes
         themes.sort(key=lambda item: (float(item.score or 0.0), item.label.lower()), reverse=True)
         themes = themes[:7]
 
@@ -345,7 +356,8 @@ class ProductService:
         score_rows = self.repo.list_company_strategy_scores_for_filing(company_id, filing_id)
         if not score_rows:
             raise NotFoundError(f"No strategy scores for latest snapshot of {ticker.upper()}")
-        extraction_rows = self.repo.list_strategy_extractions_for_filing(filing_id)
+        extraction_map = self._company_extractions_by_filing(company_id, limit=3000)
+        extraction_rows = extraction_map.get(filing_id, [])
         taxonomy_decision_map = self._build_taxonomy_decision_map(extraction_rows)
 
         previous_scores = self.repo.list_company_strategy_scores_all(company_id, limit=1200)
@@ -479,11 +491,12 @@ class ProductService:
 
         previous_filings = self.repo.list_filings_by_ids(sorted(previous_filing_ids))
         persistence_map = self._build_persistence_map(company_id)
+        extraction_map = self._company_extractions_by_filing(company_id, limit=3000)
 
         score_component_map_by_filing: dict[int, dict[tuple[str, str], dict[str, Any]]] = {}
         filing_ids = sorted({int(row.get("filing_id", 0) or 0) for row in rows if row.get("filing_id")})
         for filing_id in filing_ids:
-            extraction_rows = self.repo.list_strategy_extractions_for_filing(filing_id)
+            extraction_rows = extraction_map.get(filing_id, [])
             score_component_map_by_filing[filing_id] = self._build_score_component_map(extraction_rows)
 
         signals: list[ClientStrategySignal] = []
@@ -1288,6 +1301,85 @@ class ProductService:
             f"{level.title()} confidence: risk delta {risk_delta:+.2f}, "
             f"response delta {response_delta:+.2f}, link strength {link_strength:.2f}."
         )
+
+    def _company_extractions_by_filing(self, company_id: int, limit: int = 3000) -> dict[int, list[dict[str, Any]]]:
+        rows = self.repo.list_company_extractions(company_id, limit=limit)
+        grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            filing = ((row.get("sections") or {}).get("filings") or {})
+            filing_id = int(filing.get("id", 0) or 0)
+            if filing_id:
+                grouped[filing_id].append(row)
+        for filing_rows in grouped.values():
+            filing_rows.sort(key=lambda item: int(item.get("id", 0) or 0))
+        return grouped
+
+    def _sort_theme_evidence(self, theme: UiTheme) -> None:
+        if not theme.evidence:
+            return
+        theme.evidence.sort(key=lambda item: len((item.quote or "").strip()), reverse=True)
+        theme.evidence.sort(key=lambda item: str(item.filing_date or ""), reverse=True)
+        theme.evidence.sort(key=lambda item: 0 if item.source_kind == "quote" else 1)
+
+        deduped: list[UiThemeEvidence] = []
+        seen: set[str] = set()
+        for item in theme.evidence:
+            quote = (item.quote or "").strip()
+            if not quote:
+                continue
+            key = quote.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            item.quote = quote
+            deduped.append(item)
+        theme.evidence = deduped[:4]
+
+    def _is_generic_ui_text(self, text: str | None) -> bool:
+        raw = (text or "").strip()
+        if not raw:
+            return True
+        if self._looks_like_template_text(raw):
+            return True
+        if len(raw.split()) < 6:
+            return True
+        return False
+
+    def _looks_like_template_text(self, text: str | None) -> bool:
+        lowered = (text or "").strip().lower()
+        if not lowered:
+            return True
+        generic_markers = [
+            "recent filing language consistently supports emphasis on",
+            "current relevance score",
+            "directionality currently limited",
+            "material strategic focus worth active monitoring",
+            "emerging relevance",
+            "derived from filing signals",
+            "taxonomy",
+            "classifier",
+            "threshold",
+            "model score",
+            "prompt",
+            "schema",
+        ]
+        return any(marker in lowered for marker in generic_markers)
+
+    def _is_displayable_ui_theme(self, theme: UiTheme) -> bool:
+        score = float(theme.score or 0.0)
+        direct_evidence = [
+            item for item in theme.evidence if item.source_kind == "quote" and not self._looks_like_template_text(item.quote)
+        ]
+        inferred_evidence = [
+            item for item in theme.evidence if item.source_kind != "quote" and not self._is_generic_ui_text(item.quote)
+        ]
+        if direct_evidence:
+            return True
+        if inferred_evidence and score >= 0.7:
+            return True
+        if inferred_evidence and float(theme.persistence_score or 0.0) >= 0.75 and score >= 0.6:
+            return True
+        return False
 
     def _canonical_theme_key(self, raw: str) -> str:
         cleaned = (raw or "").lower().strip()
