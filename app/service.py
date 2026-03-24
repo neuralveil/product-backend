@@ -69,12 +69,10 @@ class ProductService:
 
     def get_ui_ticker_intelligence(self, ticker: str) -> UiTickerIntelligenceResponse:
         snapshot = self.get_strategy_snapshot(ticker)
-        dominant = self.get_dominant_themes(ticker, limit=5)
-        signals = self.get_strategy_signals(ticker, limit=120, latest_only=True)
-        links = self.get_strategy_response_links(ticker, limit=50, latest_only=True)
-        # Backfill quote evidence from recent history to avoid over-anchoring evidence to the latest filing.
-        signals_history = self.get_strategy_signals(ticker, limit=300, latest_only=False)
-        links_history = self.get_strategy_response_links(ticker, limit=120, latest_only=False)
+        # Keep this endpoint lightweight for UI latency and reliability.
+        signals = self.get_strategy_signals(ticker, limit=80, latest_only=True)
+        links = self.get_strategy_response_links(ticker, limit=40, latest_only=True)
+        dominant_rows = list(snapshot.dominant_themes or [])[:5]
 
         aggregated: dict[str, UiTheme] = {}
 
@@ -101,60 +99,12 @@ class ProductService:
             theme.evidence.append(evidence)
 
         history_evidence_by_theme: dict[str, list[UiThemeEvidence]] = defaultdict(list)
-        for row in signals_history.signals:
-            if row.evidence_quote:
-                key = self._canonical_theme_key(row.theme_key)
-                history_evidence_by_theme[key].append(
-                    UiThemeEvidence(
-                        quote=row.evidence_quote.strip(),
-                        filing_date=row.filing_date,
-                        filing_type=row.filing_type,
-                        source_kind="quote",
-                    )
-                )
-        for row in links_history.links:
-            if row.risk and row.evidence_quote_risk:
-                key = self._canonical_theme_key(row.risk)
-                history_evidence_by_theme[key].append(
-                    UiThemeEvidence(
-                        quote=row.evidence_quote_risk.strip(),
-                        filing_date=row.filing_date,
-                        filing_type=row.filing_type,
-                        source_kind="quote",
-                    )
-                )
-            if row.response and row.evidence_quote_response:
-                key = self._canonical_theme_key(row.response)
-                history_evidence_by_theme[key].append(
-                    UiThemeEvidence(
-                        quote=row.evidence_quote_response.strip(),
-                        filing_date=row.filing_date,
-                        filing_type=row.filing_type,
-                        source_kind="quote",
-                    )
-                )
-        for key, rows in history_evidence_by_theme.items():
-            rows.sort(key=lambda item: str(item.filing_date or ""), reverse=True)
-            deduped: list[UiThemeEvidence] = []
-            seen: set[str] = set()
-            for item in rows:
-                q = (item.quote or "").strip()
-                if not q or q in seen:
-                    continue
-                seen.add(q)
-                deduped.append(item)
-            history_evidence_by_theme[key] = deduped
 
-        for row in dominant.dominant_themes:
+        for row in dominant_rows:
             theme = ensure_theme(row.key, row.label, row.dimension_key)
             theme.score = max(theme.score or 0.0, float(row.score or 0.0))
             theme.dimension_key = theme.dimension_key or row.dimension_key
-            if row.why_selected:
-                cleaned_why = str(row.why_selected).strip()
-                if cleaned_why and not self._is_generic_ui_text(cleaned_why):
-                    if not theme.source_insight or len(cleaned_why) > len(theme.source_insight):
-                        theme.source_insight = cleaned_why
-            for quote in row.evidence_quotes or ([] if not row.evidence_quote else [row.evidence_quote]):
+            for quote in row.evidence_quotes or []:
                 cleaned = str(quote).strip()
                 if not cleaned:
                     continue
@@ -162,9 +112,9 @@ class ProductService:
                     theme,
                     UiThemeEvidence(
                         quote=cleaned,
-                        filing_date=dominant.filing_date,
-                        filing_type=dominant.filing_type,
-                        source_kind="inferred" if row.evidence_source == "inferred_extraction" else "quote",
+                        filing_date=snapshot.filing_date,
+                        filing_type=snapshot.filing_type,
+                        source_kind="quote",
                     ),
                 )
             if row.persistence_count is not None:
@@ -252,7 +202,7 @@ class ProductService:
 
         theme_index = {row.id: row for row in themes}
         key_moves: list[UiTheme] = []
-        for dominant_theme in dominant.dominant_themes:
+        for dominant_theme in dominant_rows:
             key = self._canonical_theme_key(dominant_theme.key)
             row = theme_index.get(key)
             if row:
@@ -267,8 +217,8 @@ class ProductService:
 
         return UiTickerIntelligenceResponse(
             ticker=snapshot.ticker,
-            filing_date=snapshot.filing_date or dominant.filing_date,
-            filing_type=snapshot.filing_type or dominant.filing_type,
+            filing_date=snapshot.filing_date,
+            filing_type=snapshot.filing_type,
             narrative=narrative,
             themes=themes,
             key_moves=key_moves,
