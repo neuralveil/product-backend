@@ -20,6 +20,9 @@ from app.schemas import (
     ClientStrategyTrendPoint,
     ClientStrategyTrendSeries,
     ClientStrategyTrendsResponse,
+    UiTheme,
+    UiThemeEvidence,
+    UiTickerIntelligenceResponse,
     TaxonomyCatalogResponse,
 )
 from app.taxonomy import (
@@ -63,6 +66,203 @@ class ProductService:
 
     def get_taxonomy_catalog(self) -> TaxonomyCatalogResponse:
         return TaxonomyCatalogResponse(catalog=get_taxonomy_catalog_detailed())
+
+    def get_ui_ticker_intelligence(self, ticker: str) -> UiTickerIntelligenceResponse:
+        snapshot = self.get_strategy_snapshot(ticker)
+        dominant = self.get_dominant_themes(ticker, limit=5)
+        signals = self.get_strategy_signals(ticker, limit=120, latest_only=True)
+        links = self.get_strategy_response_links(ticker, limit=50, latest_only=True)
+        # Backfill quote evidence from recent history to avoid over-anchoring evidence to the latest filing.
+        signals_history = self.get_strategy_signals(ticker, limit=300, latest_only=False)
+        links_history = self.get_strategy_response_links(ticker, limit=120, latest_only=False)
+
+        aggregated: dict[str, UiTheme] = {}
+
+        def ensure_theme(theme_key: str, label: str | None = None, dimension_key: str | None = None) -> UiTheme:
+            key = self._canonical_theme_key(theme_key)
+            existing = aggregated.get(key)
+            if existing is None:
+                existing = UiTheme(
+                    id=key,
+                    theme_key=theme_key,
+                    label=label or label_display_name(theme_key) or theme_key.replace("_", " ").title(),
+                    dimension_key=dimension_key,
+                    evidence=[],
+                )
+                aggregated[key] = existing
+            return existing
+
+        def add_evidence(theme: UiTheme, evidence: UiThemeEvidence) -> None:
+            quote = (evidence.quote or "").strip()
+            if not quote:
+                return
+            if any(existing.quote.strip() == quote for existing in theme.evidence):
+                return
+            theme.evidence.append(evidence)
+
+        history_evidence_by_theme: dict[str, list[UiThemeEvidence]] = defaultdict(list)
+        for row in signals_history.signals:
+            if row.evidence_quote:
+                key = self._canonical_theme_key(row.theme_key)
+                history_evidence_by_theme[key].append(
+                    UiThemeEvidence(
+                        quote=row.evidence_quote.strip(),
+                        filing_date=row.filing_date,
+                        filing_type=row.filing_type,
+                        source_kind="quote",
+                    )
+                )
+        for row in links_history.links:
+            if row.risk and row.evidence_quote_risk:
+                key = self._canonical_theme_key(row.risk)
+                history_evidence_by_theme[key].append(
+                    UiThemeEvidence(
+                        quote=row.evidence_quote_risk.strip(),
+                        filing_date=row.filing_date,
+                        filing_type=row.filing_type,
+                        source_kind="quote",
+                    )
+                )
+            if row.response and row.evidence_quote_response:
+                key = self._canonical_theme_key(row.response)
+                history_evidence_by_theme[key].append(
+                    UiThemeEvidence(
+                        quote=row.evidence_quote_response.strip(),
+                        filing_date=row.filing_date,
+                        filing_type=row.filing_type,
+                        source_kind="quote",
+                    )
+                )
+        for key, rows in history_evidence_by_theme.items():
+            rows.sort(key=lambda item: str(item.filing_date or ""), reverse=True)
+            deduped: list[UiThemeEvidence] = []
+            seen: set[str] = set()
+            for item in rows:
+                q = (item.quote or "").strip()
+                if not q or q in seen:
+                    continue
+                seen.add(q)
+                deduped.append(item)
+            history_evidence_by_theme[key] = deduped
+
+        for row in dominant.dominant_themes:
+            theme = ensure_theme(row.key, row.label, row.dimension_key)
+            theme.score = max(theme.score or 0.0, float(row.score or 0.0))
+            theme.dimension_key = theme.dimension_key or row.dimension_key
+            if row.why_selected and (not theme.source_insight or len(row.why_selected) > len(theme.source_insight)):
+                theme.source_insight = row.why_selected
+            for quote in row.evidence_quotes or ([] if not row.evidence_quote else [row.evidence_quote]):
+                cleaned = str(quote).strip()
+                if not cleaned:
+                    continue
+                add_evidence(
+                    theme,
+                    UiThemeEvidence(
+                        quote=cleaned,
+                        filing_date=dominant.filing_date,
+                        filing_type=dominant.filing_type,
+                        source_kind="inferred" if row.evidence_source == "inferred_extraction" else "quote",
+                    ),
+                )
+            if row.persistence_count is not None:
+                theme.persistence_count = row.persistence_count
+            if row.persistence_score is not None:
+                theme.persistence_score = row.persistence_score
+
+        for row in signals.signals:
+            theme = ensure_theme(row.theme_key, row.theme_label, row.dimension_key)
+            if row.current_score is not None:
+                theme.score = max(theme.score or 0.0, float(row.current_score))
+            elif row.confidence is not None:
+                theme.score = max(theme.score or 0.0, float(row.confidence))
+            theme.dimension_key = theme.dimension_key or row.dimension_key
+            if row.direction and (theme.direction is None or (row.current_score or row.confidence or 0) >= (theme.score or 0)):
+                theme.direction = row.direction
+            if row.description and (not theme.source_insight or len(row.description) > len(theme.source_insight)):
+                theme.source_insight = row.description
+            if row.delta is not None and (theme.delta is None or abs(row.delta) > abs(theme.delta)):
+                theme.delta = row.delta
+                theme.delta_severity = row.delta_severity
+                theme.comparison_basis = row.comparison_basis
+            if row.persistence_count is not None:
+                theme.persistence_count = row.persistence_count
+            if row.persistence_score is not None:
+                theme.persistence_score = row.persistence_score
+            if row.evidence_quote:
+                quote = row.evidence_quote.strip()
+                add_evidence(
+                    theme,
+                    UiThemeEvidence(
+                        quote=quote,
+                        filing_date=row.filing_date,
+                        filing_type=row.filing_type,
+                        source_kind="quote",
+                    ),
+                )
+
+        for row in links.links:
+            risk_key = self._canonical_theme_key(row.risk)
+            response_key = self._canonical_theme_key(row.response)
+            risk_theme = aggregated.get(risk_key)
+            response_theme = aggregated.get(response_key)
+            if risk_theme and row.evidence_quote_risk and not risk_theme.evidence:
+                add_evidence(
+                    risk_theme,
+                    UiThemeEvidence(
+                        quote=row.evidence_quote_risk,
+                        filing_date=row.filing_date,
+                        filing_type=row.filing_type,
+                        source_kind="quote",
+                    ),
+                )
+            if response_theme and row.evidence_quote_response and not response_theme.evidence:
+                add_evidence(
+                    response_theme,
+                    UiThemeEvidence(
+                        quote=row.evidence_quote_response,
+                        filing_date=row.filing_date,
+                        filing_type=row.filing_type,
+                        source_kind="quote",
+                    ),
+                )
+
+        themes = list(aggregated.values())
+        for theme in themes:
+            # If evidence is missing or inferred-only, enrich with most recent direct quotes from history.
+            has_direct_quote = any(item.source_kind == "quote" for item in theme.evidence)
+            if (not theme.evidence or not has_direct_quote) and history_evidence_by_theme.get(theme.id):
+                for item in history_evidence_by_theme[theme.id][:2]:
+                    add_evidence(theme, item)
+            if theme.evidence_count is None:
+                theme.evidence_count = len(theme.evidence) if theme.evidence else None
+
+        themes.sort(key=lambda item: (float(item.score or 0.0), item.label.lower()), reverse=True)
+        themes = themes[:7]
+
+        theme_index = {row.id: row for row in themes}
+        key_moves: list[UiTheme] = []
+        for dominant_theme in dominant.dominant_themes:
+            key = self._canonical_theme_key(dominant_theme.key)
+            row = theme_index.get(key)
+            if row:
+                key_moves.append(row)
+        if not key_moves:
+            key_moves = themes[:5]
+        else:
+            key_moves = key_moves[:5]
+
+        risk_pairs = sorted(links.links, key=lambda row: (float(row.confidence), float(row.link_strength or 0)), reverse=True)[:3]
+        narrative = self._build_ui_narrative(ticker=snapshot.ticker, themes=themes, risk_pairs=risk_pairs)
+
+        return UiTickerIntelligenceResponse(
+            ticker=snapshot.ticker,
+            filing_date=snapshot.filing_date or dominant.filing_date,
+            filing_type=snapshot.filing_type or dominant.filing_type,
+            narrative=narrative,
+            themes=themes,
+            key_moves=key_moves,
+            risk_pairs=risk_pairs,
+        )
 
     def search_companies(self, query: str, limit: int) -> CompanySearchResponse:
         rows = self.repo.search_companies(query, limit=limit)
@@ -1088,3 +1288,39 @@ class ProductService:
             f"{level.title()} confidence: risk delta {risk_delta:+.2f}, "
             f"response delta {response_delta:+.2f}, link strength {link_strength:.2f}."
         )
+
+    def _canonical_theme_key(self, raw: str) -> str:
+        cleaned = (raw or "").lower().strip()
+        if not cleaned:
+            return ""
+        if "ai" in cleaned and any(token in cleaned for token in ["infrastructure", "compute", "capex", "investment"]):
+            return "ai_infrastructure_investment"
+        if any(token in cleaned for token in ["international", "global", "geographic"]) and any(token in cleaned for token in ["expansion", "growth", "market"]):
+            return "international_expansion"
+        if any(token in cleaned for token in ["cost", "efficiency", "discipline", "optimization", "productivity"]):
+            return "cost_efficiency"
+        if any(token in cleaned for token in ["competitive", "competition", "rivalry"]) and any(token in cleaned for token in ["intensity", "pressure", "dynamics"]):
+            return "competitive_intensity"
+        if "automation" in cleaned and ("ai" in cleaned or "machine" in cleaned or "software" in cleaned):
+            return "ai_automation"
+        return cleaned.replace(" ", "_")
+
+    def _build_ui_narrative(self, *, ticker: str, themes: list[UiTheme], risk_pairs: list[Any]) -> str:
+        if not themes:
+            return f"{ticker} has limited strategy signal coverage in the latest dataset."
+        lead = themes[0].label if len(themes) > 0 else None
+        second = themes[1].label if len(themes) > 1 else None
+        third = themes[2].label if len(themes) > 2 else None
+        if lead and second and third:
+            text = f"{ticker} is prioritizing {lead} and {second}, while sustaining focus on {third}."
+        elif lead and second:
+            text = f"{ticker} is prioritizing {lead} and {second}."
+        else:
+            text = f"{ticker} is primarily prioritizing {lead}."
+
+        if risk_pairs:
+            top = risk_pairs[0]
+            risk = label_display_name(str(top.risk or "")) or str(top.risk or "")
+            response = label_display_name(str(top.response or "")) or str(top.response or "")
+            text += f" Main pressure point: {risk}, with response concentrated in {response}."
+        return text

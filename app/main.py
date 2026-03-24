@@ -16,6 +16,7 @@ from app.schemas import (
     FeedbackCreateResponse,
     HealthResponse,
     TaxonomyCatalogResponse,
+    UiTickerIntelligenceResponse,
 )
 from app.service import ProductService
 
@@ -66,6 +67,19 @@ def search_companies(
 ):
     try:
         return service.search_companies(query=q, limit=limit)
+    except Exception as exc:
+        http_exc = to_http_error(exc)
+        return JSONResponse(status_code=http_exc.status_code, content={"detail": str(http_exc.detail)})
+
+
+@app.get(
+    "/v1/ui/ticker/{ticker}/intelligence",
+    response_model=UiTickerIntelligenceResponse,
+    responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+)
+def get_ui_ticker_intelligence(ticker: str):
+    try:
+        return service.get_ui_ticker_intelligence(ticker=ticker)
     except Exception as exc:
         http_exc = to_http_error(exc)
         return JSONResponse(status_code=http_exc.status_code, content={"detail": str(http_exc.detail)})

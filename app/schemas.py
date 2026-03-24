@@ -117,6 +117,40 @@ class ClientStrategyResponseLinksResponse(BaseModel):
     links: list[ClientStrategyResponseLink]
 
 
+class UiThemeEvidence(BaseModel):
+    quote: str
+    filing_date: str | None = None
+    filing_type: str | None = None
+    source_kind: str = "quote"
+
+
+class UiTheme(BaseModel):
+    id: str
+    theme_key: str
+    label: str
+    dimension_key: str | None = None
+    score: float | None = None
+    direction: str | None = None
+    source_insight: str | None = None
+    evidence_count: int | None = None
+    evidence: list[UiThemeEvidence] = []
+    delta: float | None = None
+    delta_severity: str | None = None
+    comparison_basis: str | None = None
+    persistence_count: int | None = None
+    persistence_score: float | None = None
+
+
+class UiTickerIntelligenceResponse(BaseModel):
+    ticker: str
+    filing_date: str | None = None
+    filing_type: str | None = None
+    narrative: str
+    themes: list[UiTheme]
+    key_moves: list[UiTheme]
+    risk_pairs: list[ClientStrategyResponseLink]
+
+
 class ClientDominantTheme(BaseModel):
     key: str
     label: str

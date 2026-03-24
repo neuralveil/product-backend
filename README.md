@@ -14,6 +14,7 @@ Implemented endpoints:
 - `GET /taxonomy-catalog`
 - `GET /v1/taxonomy/catalog`
 - `GET /v1/companies/search?q=nvidia`
+- `GET /v1/ui/ticker/{ticker}/intelligence` (UI-only aggregated payload)
 - `GET /v1/strategy/snapshot?ticker=NVDA`
 - `GET /v1/strategy/trends?ticker=NVDA&theme_key=ai_automation`
 - `GET /v1/strategy/signals?ticker=NVDA&limit=50&latest_only=true`
