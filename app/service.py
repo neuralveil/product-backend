@@ -70,7 +70,7 @@ class ProductService:
     def get_ui_ticker_intelligence(self, ticker: str) -> UiTickerIntelligenceResponse:
         snapshot = self.get_strategy_snapshot(ticker)
         # Keep this endpoint lightweight for UI latency and reliability.
-        signals = self.get_strategy_signals(ticker, limit=80, latest_only=True)
+        signals = self.get_strategy_signals(ticker, limit=80, latest_only=True, include_score_components=False)
         links = self.get_strategy_response_links(ticker, limit=40, latest_only=True)
         dominant_rows = list(snapshot.dominant_themes or [])[:5]
 
@@ -410,7 +410,13 @@ class ProductService:
             themes=themes,
         )
 
-    def get_strategy_signals(self, ticker: str, limit: int, latest_only: bool) -> ClientStrategySignalsResponse:
+    def get_strategy_signals(
+        self,
+        ticker: str,
+        limit: int,
+        latest_only: bool,
+        include_score_components: bool = True,
+    ) -> ClientStrategySignalsResponse:
         company = self.repo.get_company_by_ticker(ticker)
         company_id = int(company["id"])
 
@@ -441,13 +447,13 @@ class ProductService:
 
         previous_filings = self.repo.list_filings_by_ids(sorted(previous_filing_ids))
         persistence_map = self._build_persistence_map(company_id)
-        extraction_map = self._company_extractions_by_filing(company_id, limit=3000)
-
         score_component_map_by_filing: dict[int, dict[tuple[str, str], dict[str, Any]]] = {}
-        filing_ids = sorted({int(row.get("filing_id", 0) or 0) for row in rows if row.get("filing_id")})
-        for filing_id in filing_ids:
-            extraction_rows = extraction_map.get(filing_id, [])
-            score_component_map_by_filing[filing_id] = self._build_score_component_map(extraction_rows)
+        if include_score_components:
+            extraction_map = self._company_extractions_by_filing(company_id, limit=3000)
+            filing_ids = sorted({int(row.get("filing_id", 0) or 0) for row in rows if row.get("filing_id")})
+            for filing_id in filing_ids:
+                extraction_rows = extraction_map.get(filing_id, [])
+                score_component_map_by_filing[filing_id] = self._build_score_component_map(extraction_rows)
 
         signals: list[ClientStrategySignal] = []
         for row in rows:
@@ -470,11 +476,9 @@ class ProductService:
                 previous_filing_type = str((prev_filing or {}).get("filing_type", "")) or None
 
             persistence = persistence_map.get((dimension_key or "", theme_key), {})
-            score_components = (
-                score_component_map_by_filing.get(filing_id or 0, {}).get((dimension_key or "", theme_key))
-                if filing_id
-                else None
-            )
+            score_components = None
+            if include_score_components and filing_id:
+                score_components = score_component_map_by_filing.get(filing_id or 0, {}).get((dimension_key or "", theme_key))
 
             signals.append(
                 ClientStrategySignal(
