@@ -69,10 +69,11 @@ class ProductService:
 
     def get_ui_ticker_intelligence(self, ticker: str) -> UiTickerIntelligenceResponse:
         snapshot = self.get_strategy_snapshot(ticker)
+        dominant = self.get_dominant_themes(ticker, limit=5)
         # Keep this endpoint lightweight for UI latency and reliability.
         signals = self.get_strategy_signals(ticker, limit=80, latest_only=True, include_score_components=False)
         links = self.get_strategy_response_links(ticker, limit=40, latest_only=True)
-        dominant_rows = list(snapshot.dominant_themes or [])[:5]
+        dominant_rows = list(dominant.dominant_themes or [])[:5]
 
         aggregated: dict[str, UiTheme] = {}
 
@@ -98,13 +99,16 @@ class ProductService:
                 return
             theme.evidence.append(evidence)
 
-        history_evidence_by_theme: dict[str, list[UiThemeEvidence]] = defaultdict(list)
-
         for row in dominant_rows:
             theme = ensure_theme(row.key, row.label, row.dimension_key)
             theme.score = max(theme.score or 0.0, float(row.score or 0.0))
             theme.dimension_key = theme.dimension_key or row.dimension_key
-            for quote in row.evidence_quotes or []:
+            if row.why_selected:
+                cleaned_why = str(row.why_selected).strip()
+                if cleaned_why and not self._is_generic_ui_text(cleaned_why):
+                    if not theme.source_insight or len(cleaned_why) > len(theme.source_insight):
+                        theme.source_insight = cleaned_why
+            for quote in row.evidence_quotes or ([] if not row.evidence_quote else [row.evidence_quote]):
                 cleaned = str(quote).strip()
                 if not cleaned:
                     continue
@@ -112,9 +116,9 @@ class ProductService:
                     theme,
                     UiThemeEvidence(
                         quote=cleaned,
-                        filing_date=snapshot.filing_date,
-                        filing_type=snapshot.filing_type,
-                        source_kind="quote",
+                        filing_date=dominant.filing_date,
+                        filing_type=dominant.filing_type,
+                        source_kind="inferred" if row.evidence_source == "inferred_extraction" else "quote",
                     ),
                 )
             if row.persistence_count is not None:
@@ -187,9 +191,6 @@ class ProductService:
         for theme in themes:
             # If evidence is missing or inferred-only, enrich with most recent direct quotes from history.
             has_direct_quote = any(item.source_kind == "quote" for item in theme.evidence)
-            if (not theme.evidence or not has_direct_quote) and history_evidence_by_theme.get(theme.id):
-                for item in history_evidence_by_theme[theme.id][:2]:
-                    add_evidence(theme, item)
             self._sort_theme_evidence(theme)
             if theme.evidence_count is None:
                 theme.evidence_count = len(theme.evidence) if theme.evidence else None
@@ -217,8 +218,8 @@ class ProductService:
 
         return UiTickerIntelligenceResponse(
             ticker=snapshot.ticker,
-            filing_date=snapshot.filing_date,
-            filing_type=snapshot.filing_type,
+            filing_date=snapshot.filing_date or dominant.filing_date,
+            filing_type=snapshot.filing_type or dominant.filing_type,
             narrative=narrative,
             themes=themes,
             key_moves=key_moves,
@@ -306,8 +307,7 @@ class ProductService:
         score_rows = self.repo.list_company_strategy_scores_for_filing(company_id, filing_id)
         if not score_rows:
             raise NotFoundError(f"No strategy scores for latest snapshot of {ticker.upper()}")
-        extraction_map = self._company_extractions_by_filing(company_id, limit=3000)
-        extraction_rows = extraction_map.get(filing_id, [])
+        extraction_rows = self.repo.list_strategy_extractions_for_filing(filing_id)
         taxonomy_decision_map = self._build_taxonomy_decision_map(extraction_rows)
 
         previous_scores = self.repo.list_company_strategy_scores_all(company_id, limit=1200)
