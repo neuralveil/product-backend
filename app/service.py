@@ -864,6 +864,8 @@ class ProductService:
             "gate",
             "prompt",
             "schema",
+            "heuristic strategy fallback",
+            "retrieved/field evidence",
             "pass a",
             "pass b",
         ]
@@ -873,7 +875,6 @@ class ProductService:
 
     def _build_taxonomy_decision_map(self, extraction_rows: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
         out: dict[tuple[str, str], dict[str, Any]] = {}
-        inferred_out: dict[tuple[str, str], dict[str, Any]] = {}
         keyword_maps = {
             "strategy_direction": DIRECTION_KEYWORDS,
             "strategy_action": ACTION_KEYWORDS,
@@ -940,6 +941,11 @@ class ProductService:
                         for q in (label_row.get("evidence_quotes") or [])
                         if isinstance(q, str) and str(q).strip()
                     ]
+                    evidence_quotes = [
+                        q for q in evidence_quotes
+                        if self._sanitize_quote_for_theme(theme_key, q) is not None
+                    ]
+                    evidence_quote = self._sanitize_quote_for_theme(theme_key, evidence_quote)
                     if evidence_quote and evidence_quote not in evidence_quotes:
                         evidence_quotes = [evidence_quote, *evidence_quotes]
 
@@ -951,28 +957,40 @@ class ProductService:
                         "_score": score,
                     }
 
-                    if not evidence_quote and isinstance(final_payload, dict):
-                        inferred_sentence = best_sentence_for_theme(theme_key, str(dimension), final_payload)
-                        if inferred_sentence:
-                            inferred_out[key] = {
-                                "evidence_quote": inferred_sentence,
-                                "evidence_quotes": [inferred_sentence],
-                                "evidence_source": "inferred_extraction",
-                                "why_selected": f"The extraction summary for {label_display_name(theme_key).lower()} contains concrete supporting language.",
-                                "_score": score,
-                            }
-
-        for key, inferred in inferred_out.items():
-            existing = out.get(key)
-            if existing is None:
-                out[key] = inferred
-                continue
-            if not existing.get("evidence_quote"):
-                out[key] = inferred
-
         for value in out.values():
             value.pop("_score", None)
         return out
+
+    def _sanitize_quote_for_theme(self, theme_key: str, quote: str | None) -> str | None:
+        text = " ".join((quote or "").split()).strip()
+        if not text:
+            return None
+
+        words = text.split()
+        if len(words) < 6 or len(words) > 90:
+            return None
+
+        lowered = text.lower()
+        boilerplate_markers = [
+            "item 1a. risk factors",
+            "these risk factors do not identify all risks",
+            "investment in our securities",
+            "material adverse effect on our business",
+            "events and consequences discussed in these risk factors",
+        ]
+        if any(marker in lowered for marker in boilerplate_markers):
+            return None
+
+        canonical = self._canonical_theme_key(theme_key)
+        terms = (
+            DIRECTION_KEYWORDS.get(canonical, [])
+            or ACTION_KEYWORDS.get(canonical, [])
+            or RISK_POSTURE_KEYWORDS.get(canonical, [])
+        )
+        if terms and not any(term.lower() in lowered for term in terms):
+            return None
+
+        return text
 
     def _build_fallback_drift_rows(self, company_id: int) -> list[dict[str, Any]]:
         rows = self.repo.list_company_strategy_scores_all(company_id, limit=1200)
