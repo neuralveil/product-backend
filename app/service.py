@@ -95,6 +95,10 @@ class ProductService:
             quote = (evidence.quote or "").strip()
             if not quote:
                 return
+            if not self._is_reasonable_evidence_quote(quote):
+                return
+            if not self._quote_matches_theme(theme.theme_key, quote):
+                return
             if any(existing.quote.strip().lower() == quote.lower() for existing in theme.evidence):
                 return
             theme.evidence.append(evidence)
@@ -1310,6 +1314,8 @@ class ProductService:
             "material strategic focus worth active monitoring",
             "emerging relevance",
             "derived from filing signals",
+            "heuristic strategy fallback",
+            "retrieved/field evidence",
             "taxonomy",
             "classifier",
             "threshold",
@@ -1350,6 +1356,39 @@ class ProductService:
         if "automation" in cleaned and ("ai" in cleaned or "machine" in cleaned or "software" in cleaned):
             return "ai_automation"
         return cleaned.replace(" ", "_")
+
+    def _is_reasonable_evidence_quote(self, quote: str) -> bool:
+        text = " ".join((quote or "").split()).strip()
+        if not text:
+            return False
+        words = text.split()
+        if len(words) < 6:
+            return False
+        if len(words) > 90:
+            return False
+
+        lowered = text.lower()
+        boilerplate_markers = [
+            "item 1a. risk factors",
+            "these risk factors do not identify all risks",
+            "investment in our securities",
+            "material adverse effect on our business",
+        ]
+        if any(marker in lowered for marker in boilerplate_markers):
+            return False
+        return True
+
+    def _quote_matches_theme(self, theme_key: str, quote: str) -> bool:
+        canonical = self._canonical_theme_key(theme_key)
+        terms = (
+            DIRECTION_KEYWORDS.get(canonical, [])
+            or ACTION_KEYWORDS.get(canonical, [])
+            or RISK_POSTURE_KEYWORDS.get(canonical, [])
+        )
+        if not terms:
+            return True
+        lowered = quote.lower()
+        return any(term.lower() in lowered for term in terms)
 
     def _build_ui_narrative(self, *, ticker: str, themes: list[UiTheme], risk_pairs: list[Any]) -> str:
         if not themes:
