@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import time
 from typing import Any
 
 from app.errors import NotFoundError
@@ -20,10 +21,16 @@ from app.schemas import (
     ClientStrategyTrendPoint,
     ClientStrategyTrendSeries,
     ClientStrategyTrendsResponse,
+    TickerChange,
+    TickerConfidenceCoverage,
+    TickerIntelligenceResponse,
+    TickerRiskResponse,
+    TickerSignalFiling,
+    TickerTopSignal,
+    TaxonomyCatalogResponse,
     UiTheme,
     UiThemeEvidence,
     UiTickerIntelligenceResponse,
-    TaxonomyCatalogResponse,
 )
 from app.taxonomy import (
     ACTION_KEYWORDS,
@@ -63,9 +70,193 @@ HIGH_SIGNAL_THEME_BOOSTS: dict[str, float] = {
 class ProductService:
     def __init__(self, repository: ProductRepository | None = None) -> None:
         self.repo = repository or ProductRepository()
+        self._ticker_intelligence_ttl_seconds = 120
+        self._ticker_intelligence_cache: dict[str, tuple[float, TickerIntelligenceResponse]] = {}
 
     def get_taxonomy_catalog(self) -> TaxonomyCatalogResponse:
         return TaxonomyCatalogResponse(catalog=get_taxonomy_catalog_detailed())
+
+    def get_ticker_intelligence(self, ticker: str) -> TickerIntelligenceResponse:
+        normalized_ticker = ticker.upper().strip()
+        now = time.time()
+        cached = self._ticker_intelligence_cache.get(normalized_ticker)
+        if cached and cached[0] > now:
+            return cached[1]
+
+        snapshot = self.get_strategy_snapshot(normalized_ticker)
+        signals = self.get_strategy_signals(
+            normalized_ticker,
+            limit=120,
+            latest_only=True,
+            include_score_components=False,
+        )
+        links = self.get_strategy_response_links(normalized_ticker, limit=50, latest_only=True)
+
+        deduped: dict[str, dict[str, Any]] = {}
+        for row in signals.signals:
+            theme_key = str(row.theme_key or "")
+            if not theme_key:
+                continue
+            key = self._canonical_theme_key(theme_key)
+            confidence_value = float(
+                row.current_score
+                if row.current_score is not None
+                else (row.confidence if row.confidence is not None else 0.0)
+            )
+            direction = str(row.direction or "stable").lower()
+            if row.previous_score is None and row.delta is None:
+                direction = "new"
+            if direction not in {"increasing", "stable", "decreasing", "new"}:
+                direction = "stable"
+
+            title = str(row.theme_label or label_display_name(theme_key) or theme_key.replace("_", " ").title())
+            delta_mag = abs(float(row.delta or 0.0))
+            impact_rank = self._impact_rank(theme_key, row.dimension_key)
+            direction_rank = self._direction_rank(direction)
+
+            evidence = self._evidence_snippet(row.evidence_quote)
+            filing_type = str(row.filing_type or snapshot.filing_type or "")
+            filing_date = str(row.filing_date or snapshot.filing_date or "")
+            candidate = {
+                "title": title,
+                "direction": direction,
+                "confidence": confidence_value,
+                "confidence_label": self._confidence_label(confidence_value),
+                "why_it_matters": self._investor_why(theme_key),
+                "evidence_snippet": evidence or "No direct filing quote available in current snapshot.",
+                "filing_type": filing_type,
+                "filing_date": filing_date,
+                "impact_rank": impact_rank,
+                "direction_rank": direction_rank,
+                "delta_mag": delta_mag,
+            }
+            existing = deduped.get(key)
+            if existing is None:
+                deduped[key] = candidate
+                continue
+            if (
+                direction_rank,
+                impact_rank,
+                confidence_value,
+                delta_mag,
+            ) > (
+                existing["direction_rank"],
+                existing["impact_rank"],
+                existing["confidence"],
+                existing["delta_mag"],
+            ):
+                deduped[key] = candidate
+
+        ranked = list(deduped.values())
+        ranked.sort(
+            key=lambda item: (
+                -item["direction_rank"],
+                -item["impact_rank"],
+                -float(item["confidence"]),
+                -float(item["delta_mag"]),
+                item["title"].lower(),
+            )
+        )
+        ranked = ranked[:3]
+
+        top_signals = [
+            TickerTopSignal(
+                title=item["title"],
+                direction=item["direction"],
+                why_it_matters=item["why_it_matters"],
+                confidence_label=item["confidence_label"],
+                evidence_snippet=item["evidence_snippet"],
+                filing=TickerSignalFiling(type=item["filing_type"], date=item["filing_date"]),
+            )
+            for item in ranked
+        ]
+
+        change_candidates: list[tuple[float, str]] = []
+        for item in ranked:
+            direction = item["direction"]
+            title = item["title"]
+            delta_mag = float(item["delta_mag"])
+            if direction == "new":
+                change_candidates.append((1.0, f"New strategic signal: {title}."))
+            elif direction == "increasing" and delta_mag >= 0.08:
+                change_candidates.append((delta_mag, f"Increasing emphasis on {title}."))
+            elif direction == "decreasing" and delta_mag >= 0.08:
+                change_candidates.append((delta_mag, f"Decreasing emphasis on {title}."))
+
+        seen_changes: set[str] = set()
+        changes: list[TickerChange] = []
+        for _, description in sorted(change_candidates, key=lambda row: (-row[0], row[1].lower())):
+            if description in seen_changes:
+                continue
+            seen_changes.add(description)
+            changes.append(TickerChange(description=description))
+            if len(changes) == 3:
+                break
+        if not changes:
+            changes = [TickerChange(description="No material strategic shift this period")]
+
+        risk_response: list[TickerRiskResponse] = []
+        seen_pairs: set[tuple[str, str]] = set()
+        sorted_links = sorted(
+            links.links,
+            key=lambda row: (
+                -float(row.confidence if row.confidence is not None else 0.0),
+                -float(row.link_strength if row.link_strength is not None else 0.0),
+                str(row.risk).lower(),
+                str(row.response).lower(),
+            ),
+        )
+        for row in sorted_links:
+            risk = label_display_name(str(row.risk or "")) or str(row.risk or "").replace("_", " ").title()
+            response = label_display_name(str(row.response or "")) or str(row.response or "").replace("_", " ").title()
+            if not risk or not response:
+                continue
+            pair = (risk.lower(), response.lower())
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            risk_response.append(TickerRiskResponse(risk=risk, response=response))
+            if len(risk_response) == 3:
+                break
+
+        summary = self._build_ticker_summary(
+            ticker=normalized_ticker,
+            top_signals=top_signals,
+            risk_response=risk_response,
+        )
+
+        confidence_values = [float(item["confidence"]) for item in ranked]
+        avg_confidence = (sum(confidence_values) / len(confidence_values)) if confidence_values else 0.0
+        if avg_confidence >= 0.75 and len(ranked) >= 2:
+            confidence_label = "Strong"
+        elif avg_confidence >= 0.5 and len(ranked) >= 1:
+            confidence_label = "Moderate"
+        else:
+            confidence_label = "Emerging"
+
+        breadth = len(deduped)
+        if breadth >= 5:
+            coverage_label = "High"
+        elif breadth >= 3:
+            coverage_label = "Medium"
+        else:
+            coverage_label = "Low"
+
+        response = TickerIntelligenceResponse(
+            summary=summary,
+            top_signals=top_signals,
+            changes=changes,
+            risk_response=risk_response,
+            confidence_coverage=TickerConfidenceCoverage(
+                confidence=confidence_label,
+                coverage=coverage_label,
+            ),
+        )
+        self._ticker_intelligence_cache[normalized_ticker] = (
+            now + self._ticker_intelligence_ttl_seconds,
+            response,
+        )
+        return response
 
     def get_ui_ticker_intelligence(self, ticker: str) -> UiTickerIntelligenceResponse:
         snapshot = self.get_strategy_snapshot(ticker)
@@ -1407,6 +1598,101 @@ class ProductService:
             return True
         lowered = quote.lower()
         return any(term.lower() in lowered for term in terms)
+
+    def _direction_rank(self, direction: str) -> int:
+        order = {"new": 4, "increasing": 3, "stable": 2, "decreasing": 1}
+        return order.get(direction, 0)
+
+    def _impact_rank(self, theme_key: str, dimension_key: str | None) -> int:
+        canonical = self._canonical_theme_key(theme_key)
+        growth_themes = {
+            "product_expansion",
+            "product_category_launch",
+            "international_expansion",
+            "ai_infrastructure_investment",
+            "platform_ecosystem",
+            "strategic_partnership",
+        }
+        margin_themes = {"cost_efficiency", "ai_automation", "subscription_pricing_shift"}
+        risk_themes = {"competitive_intensity", "regulatory_exposure", "supply_chain_fragility", "cybersecurity_emphasis"}
+
+        if canonical in growth_themes:
+            return 3
+        if canonical in margin_themes:
+            return 2
+        if canonical in risk_themes or str(dimension_key or "") == "risk_posture":
+            return 1
+        return 0
+
+    def _confidence_label(self, value: float) -> str:
+        if value >= 0.75:
+            return "Strong"
+        if value >= 0.5:
+            return "Moderate"
+        return "Emerging"
+
+    def _evidence_snippet(self, quote: str | None) -> str:
+        raw = " ".join((quote or "").split()).strip()
+        if not raw:
+            return ""
+        max_chars = 220
+        if len(raw) <= max_chars:
+            return raw
+        short = raw[:max_chars]
+        cut = max(short.rfind(". "), short.rfind("; "), short.rfind(", "))
+        if cut < 120:
+            cut = max_chars
+        return short[:cut].rstrip(" ,;:.") + "..."
+
+    def _investor_why(self, theme_key: str) -> str:
+        canonical = self._canonical_theme_key(theme_key)
+        if canonical == "ai_infrastructure_investment":
+            return "Signals investment in long-term AI capacity and future product competitiveness."
+        if canonical == "product_expansion":
+            return "Expands revenue opportunities and supports growth beyond existing product lines."
+        if canonical == "international_expansion":
+            return "Diversifies growth across geographies and reduces reliance on one region."
+        if canonical == "cost_efficiency":
+            return "Can support margins and free capital for reinvestment."
+        if canonical == "ai_automation":
+            return "May improve productivity and operating leverage over time."
+        if canonical == "competitive_intensity":
+            return "Indicates pressure that can affect pricing power and execution risk."
+        if canonical == "regulatory_exposure":
+            return "Raises compliance and operational risk that can influence earnings stability."
+        return "This theme is currently relevant to execution, growth, or risk management."
+
+    def _build_ticker_summary(
+        self,
+        *,
+        ticker: str,
+        top_signals: list[TickerTopSignal],
+        risk_response: list[TickerRiskResponse],
+    ) -> str:
+        if not top_signals:
+            return f"{ticker} currently has limited strategic signal coverage from the latest filing set."
+
+        first = top_signals[0].title
+        second = top_signals[1].title if len(top_signals) > 1 else None
+        third = top_signals[2].title if len(top_signals) > 2 else None
+
+        if second and third:
+            summary = f"{ticker} is currently focused on {first}, {second}, and {third}."
+        elif second:
+            summary = f"{ticker} is currently focused on {first} and {second}."
+        else:
+            summary = f"{ticker} is currently focused on {first}."
+
+        direction_notes = [item.title for item in top_signals if item.direction in {"new", "increasing"}]
+        if direction_notes:
+            summary += f" The strongest momentum is in {', '.join(direction_notes[:2])}."
+        else:
+            summary += " Strategic positioning appears broadly stable versus the prior period."
+
+        if risk_response:
+            pair = risk_response[0]
+            summary += f" Key risk-response pattern: {pair.risk} -> {pair.response}."
+        return summary
 
     def _build_ui_narrative(self, *, ticker: str, themes: list[UiTheme], risk_pairs: list[Any]) -> str:
         if not themes:

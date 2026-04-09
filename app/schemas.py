@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -149,6 +149,42 @@ class UiTickerIntelligenceResponse(BaseModel):
     themes: list[UiTheme]
     key_moves: list[UiTheme]
     risk_pairs: list[ClientStrategyResponseLink]
+
+
+class TickerSignalFiling(BaseModel):
+    type: str
+    date: str
+
+
+class TickerTopSignal(BaseModel):
+    title: str
+    direction: Literal["increasing", "stable", "decreasing", "new"]
+    why_it_matters: str
+    confidence_label: Literal["Strong", "Moderate", "Emerging"]
+    evidence_snippet: str
+    filing: TickerSignalFiling
+
+
+class TickerChange(BaseModel):
+    description: str
+
+
+class TickerRiskResponse(BaseModel):
+    risk: str
+    response: str
+
+
+class TickerConfidenceCoverage(BaseModel):
+    confidence: Literal["Strong", "Moderate", "Emerging"]
+    coverage: Literal["High", "Medium", "Low"]
+
+
+class TickerIntelligenceResponse(BaseModel):
+    summary: str
+    top_signals: list[TickerTopSignal]
+    changes: list[TickerChange]
+    risk_response: list[TickerRiskResponse]
+    confidence_coverage: TickerConfidenceCoverage
 
 
 class ClientDominantTheme(BaseModel):
