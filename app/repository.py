@@ -73,6 +73,20 @@ class ProductRepository:
         except Exception:
             return None
 
+    def get_latest_strategy_intelligence(self, company_id: int) -> dict[str, Any] | None:
+        try:
+            response = (
+                self.client.table("company_strategy_intelligence")
+                .select("filing_id,filing_date,filing_type,source,model_name,prompt_version,core_response_json,ui_response_json")
+                .eq("company_id", company_id)
+                .order("filing_date", desc=True)
+                .limit(1)
+                .execute()
+            )
+            return (response.data or [None])[0]
+        except Exception:
+            return None
+
     def list_company_strategy_scores_for_filing(self, company_id: int, filing_id: int) -> list[dict[str, Any]]:
         try:
             response = (

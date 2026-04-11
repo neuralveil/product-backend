@@ -146,6 +146,10 @@ class UiTickerIntelligenceResponse(BaseModel):
     filing_date: str | None = None
     filing_type: str | None = None
     narrative: str
+    summary: str | None = None
+    changes: list[str] = []
+    implications: list[str] = []
+    confidence_coverage: "TickerConfidenceCoverage" | None = None
     themes: list[UiTheme]
     key_moves: list[UiTheme]
     risk_pairs: list[ClientStrategyResponseLink]

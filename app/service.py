@@ -73,6 +73,50 @@ class ProductService:
         self._ticker_intelligence_ttl_seconds = 120
         self._ticker_intelligence_cache: dict[str, tuple[float, TickerIntelligenceResponse]] = {}
 
+    def _get_precomputed_intelligence_row(self, ticker: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        company = self.repo.get_company_by_ticker(ticker)
+        intelligence = self.repo.get_latest_strategy_intelligence(int(company["id"]))
+        return company, intelligence
+
+    def _validate_model(self, model_cls: Any, payload: dict[str, Any]) -> Any:
+        if hasattr(model_cls, "model_validate"):
+            return model_cls.model_validate(payload)
+        return model_cls(**payload)
+
+    def _load_precomputed_core_intelligence(self, ticker: str) -> TickerIntelligenceResponse | None:
+        try:
+            _, intelligence = self._get_precomputed_intelligence_row(ticker)
+        except Exception:
+            return None
+        if not intelligence:
+            return None
+        payload = intelligence.get("core_response_json")
+        if not isinstance(payload, dict) or not payload:
+            return None
+        try:
+            return self._validate_model(TickerIntelligenceResponse, payload)
+        except Exception:
+            return None
+
+    def _load_precomputed_ui_intelligence(self, ticker: str) -> UiTickerIntelligenceResponse | None:
+        try:
+            company, intelligence = self._get_precomputed_intelligence_row(ticker)
+        except Exception:
+            return None
+        if not intelligence:
+            return None
+        payload = intelligence.get("ui_response_json")
+        if not isinstance(payload, dict) or not payload:
+            return None
+        payload = dict(payload)
+        payload.setdefault("ticker", str(company.get("ticker", ticker.upper())))
+        payload.setdefault("filing_date", intelligence.get("filing_date"))
+        payload.setdefault("filing_type", intelligence.get("filing_type"))
+        try:
+            return self._validate_model(UiTickerIntelligenceResponse, payload)
+        except Exception:
+            return None
+
     def get_taxonomy_catalog(self) -> TaxonomyCatalogResponse:
         return TaxonomyCatalogResponse(catalog=get_taxonomy_catalog_detailed())
 
@@ -82,6 +126,14 @@ class ProductService:
         cached = self._ticker_intelligence_cache.get(normalized_ticker)
         if cached and cached[0] > now:
             return cached[1]
+
+        precomputed = self._load_precomputed_core_intelligence(normalized_ticker)
+        if precomputed is not None:
+            self._ticker_intelligence_cache[normalized_ticker] = (
+                now + self._ticker_intelligence_ttl_seconds,
+                precomputed,
+            )
+            return precomputed
 
         snapshot = self.get_strategy_snapshot(normalized_ticker)
         signals = self.get_strategy_signals(
@@ -322,6 +374,10 @@ class ProductService:
         return response
 
     def get_ui_ticker_intelligence(self, ticker: str) -> UiTickerIntelligenceResponse:
+        precomputed = self._load_precomputed_ui_intelligence(ticker.upper().strip())
+        if precomputed is not None:
+            return precomputed
+
         snapshot = self.get_strategy_snapshot(ticker)
         dominant = self.get_dominant_themes(ticker, limit=5)
         # Keep this endpoint lightweight for UI latency and reliability.
@@ -536,6 +592,10 @@ class ProductService:
             filing_date=snapshot.filing_date or dominant.filing_date,
             filing_type=snapshot.filing_type or dominant.filing_type,
             narrative=narrative,
+            summary=narrative,
+            changes=[],
+            implications=[],
+            confidence_coverage=None,
             themes=themes,
             key_moves=key_moves,
             risk_pairs=risk_pairs,
