@@ -159,6 +159,44 @@ class ProductService:
         )
         ranked = ranked[:3]
 
+        if not ranked:
+            fallback_rows: list[dict[str, Any]] = []
+            fallback_seen: set[str] = set()
+            snapshot_themes = list(snapshot.dominant_themes or []) + list(snapshot.emerging_themes or [])
+            for row in snapshot_themes:
+                theme_key = str(row.key or "")
+                canonical = self._canonical_theme_key(theme_key)
+                if not canonical or canonical in fallback_seen:
+                    continue
+                fallback_seen.add(canonical)
+                confidence_value = float(row.score or 0.45)
+                evidence_quotes = list(row.evidence_quotes or [])
+                evidence = self._evidence_snippet(evidence_quotes[0] if evidence_quotes else None)
+                fallback_rows.append(
+                    {
+                        "title": str(row.label or label_display_name(theme_key) or theme_key.replace("_", " ").title()),
+                        "direction": "stable",
+                        "confidence": confidence_value,
+                        "confidence_label": self._confidence_label(confidence_value),
+                        "why_it_matters": self._investor_why(theme_key),
+                        "evidence_snippet": evidence or "No direct filing quote available in current snapshot.",
+                        "filing_type": str(snapshot.filing_type or ""),
+                        "filing_date": str(snapshot.filing_date or ""),
+                        "impact_rank": self._impact_rank(theme_key, row.dimension_key),
+                        "direction_rank": self._direction_rank("stable"),
+                        "delta_mag": 0.0,
+                    }
+                )
+
+            fallback_rows.sort(
+                key=lambda item: (
+                    -float(item["impact_rank"]),
+                    -float(item["confidence"]),
+                    item["title"].lower(),
+                )
+            )
+            ranked = fallback_rows[:3]
+
         top_signals = [
             TickerTopSignal(
                 title=item["title"],
@@ -234,7 +272,7 @@ class ProductService:
         else:
             confidence_label = "Emerging"
 
-        breadth = len(deduped)
+        breadth = len(deduped) if deduped else len(ranked)
         if breadth >= 5:
             coverage_label = "High"
         elif breadth >= 3:
@@ -395,6 +433,20 @@ class ProductService:
         themes = qualified_themes
         themes.sort(key=lambda item: (float(item.score or 0.0), item.label.lower()), reverse=True)
         themes = themes[:7]
+
+        if not themes and aggregated:
+            fallback_themes = [
+                row
+                for row in aggregated.values()
+                if float(row.score or 0.0) >= 0.45
+                or (row.source_insight and not self._is_generic_ui_text(row.source_insight))
+            ]
+            for row in fallback_themes:
+                self._sort_theme_evidence(row)
+                if row.evidence_count is None:
+                    row.evidence_count = len(row.evidence) if row.evidence else None
+            fallback_themes.sort(key=lambda item: (float(item.score or 0.0), item.label.lower()), reverse=True)
+            themes = fallback_themes[:5]
 
         theme_index = {row.id: row for row in themes}
         key_moves: list[UiTheme] = []
@@ -1547,6 +1599,8 @@ class ProductService:
         if inferred_evidence and score >= 0.7:
             return True
         if inferred_evidence and float(theme.persistence_score or 0.0) >= 0.75 and score >= 0.6:
+            return True
+        if score >= 0.78 and theme.source_insight and not self._is_generic_ui_text(theme.source_insight):
             return True
         return False
 
