@@ -147,6 +147,31 @@ class ProductService:
             ):
                 deduped[key] = candidate
 
+        # Supplement sparse signal rows with snapshot themes so we do not collapse to a
+        # single-theme narrative when latest drift/signals are thin.
+        snapshot_theme_rows = list(snapshot.dominant_themes or []) + list(snapshot.emerging_themes or [])
+        for row in snapshot_theme_rows:
+            theme_key = str(row.key or "")
+            canonical = self._canonical_theme_key(theme_key)
+            if not canonical or canonical in deduped:
+                continue
+            confidence_value = float(row.score or 0.45)
+            evidence_quotes = list(row.evidence_quotes or [])
+            evidence = self._evidence_snippet(evidence_quotes[0] if evidence_quotes else None)
+            deduped[canonical] = {
+                "title": str(row.label or label_display_name(theme_key) or theme_key.replace("_", " ").title()),
+                "direction": "stable",
+                "confidence": confidence_value,
+                "confidence_label": self._confidence_label(confidence_value),
+                "why_it_matters": self._investor_why(theme_key),
+                "evidence_snippet": evidence or "No direct filing quote available in current snapshot.",
+                "filing_type": str(snapshot.filing_type or ""),
+                "filing_date": str(snapshot.filing_date or ""),
+                "impact_rank": self._impact_rank(theme_key, row.dimension_key),
+                "direction_rank": self._direction_rank("stable"),
+                "delta_mag": 0.0,
+            }
+
         ranked = list(deduped.values())
         ranked.sort(
             key=lambda item: (
@@ -447,6 +472,49 @@ class ProductService:
                     row.evidence_count = len(row.evidence) if row.evidence else None
             fallback_themes.sort(key=lambda item: (float(item.score or 0.0), item.label.lower()), reverse=True)
             themes = fallback_themes[:5]
+
+        if len(themes) < 2:
+            present = {self._canonical_theme_key(row.theme_key) for row in themes}
+            supplemental_rows = list(snapshot.dominant_themes or []) + list(snapshot.emerging_themes or [])
+            for row in supplemental_rows:
+                theme_key = str(row.key or "")
+                canonical = self._canonical_theme_key(theme_key)
+                if not canonical or canonical in present:
+                    continue
+                new_theme = UiTheme(
+                    id=canonical,
+                    theme_key=theme_key,
+                    label=str(row.label or label_display_name(theme_key) or theme_key.replace("_", " ").title()),
+                    dimension_key=row.dimension_key,
+                    score=float(row.score or 0.45),
+                    direction="stable",
+                    source_insight=self._investor_why(theme_key),
+                    evidence=[],
+                    evidence_count=int(row.evidence_count or 0) if row.evidence_count is not None else None,
+                    persistence_count=row.persistence_count,
+                    persistence_score=row.persistence_score,
+                )
+                for quote in list(row.evidence_quotes or [])[:2]:
+                    cleaned = self._sanitize_quote_for_theme(theme_key, str(quote))
+                    if not cleaned:
+                        continue
+                    new_theme.evidence.append(
+                        UiThemeEvidence(
+                            quote=cleaned,
+                            filing_date=snapshot.filing_date,
+                            filing_type=snapshot.filing_type,
+                            source_kind="quote",
+                        )
+                    )
+                self._sort_theme_evidence(new_theme)
+                if new_theme.evidence_count is None:
+                    new_theme.evidence_count = len(new_theme.evidence) if new_theme.evidence else None
+                themes.append(new_theme)
+                present.add(canonical)
+                if len(themes) >= 3:
+                    break
+            themes.sort(key=lambda item: (float(item.score or 0.0), item.label.lower()), reverse=True)
+            themes = themes[:7]
 
         theme_index = {row.id: row for row in themes}
         key_moves: list[UiTheme] = []
