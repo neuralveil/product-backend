@@ -141,13 +141,25 @@ class UiTheme(BaseModel):
     persistence_score: float | None = None
 
 
+class UiHistoryPoint(BaseModel):
+    filing_date: str | None = None
+    filing_type: str | None = None
+    top_themes: list[str] = []
+    takeaway: str | None = None
+
+
 class UiTickerIntelligenceResponse(BaseModel):
     ticker: str
     filing_date: str | None = None
     filing_type: str | None = None
     narrative: str
     summary: str | None = None
+    strategic_arc: str | None = None
+    current_focus: str | None = None
+    history_timeline: list[UiHistoryPoint] = []
     changes: list[str] = []
+    evolution_points: list[str] = []
+    durable_themes: list[str] = []
     implications: list[str] = []
     confidence_coverage: Optional["TickerConfidenceCoverage"] = None
     themes: list[UiTheme]
@@ -185,6 +197,10 @@ class TickerConfidenceCoverage(BaseModel):
 
 class TickerIntelligenceResponse(BaseModel):
     summary: str
+    strategic_arc: str | None = None
+    current_focus: str | None = None
+    evolution_points: list[str] = []
+    durable_themes: list[str] = []
     top_signals: list[TickerTopSignal]
     changes: list[TickerChange]
     risk_response: list[TickerRiskResponse]
