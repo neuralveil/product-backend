@@ -1,4 +1,4 @@
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -149,7 +149,7 @@ class UiTickerIntelligenceResponse(BaseModel):
     summary: str | None = None
     changes: list[str] = []
     implications: list[str] = []
-    confidence_coverage: "TickerConfidenceCoverage" | None = None
+    confidence_coverage: Optional["TickerConfidenceCoverage"] = None
     themes: list[UiTheme]
     key_moves: list[UiTheme]
     risk_pairs: list[ClientStrategyResponseLink]
