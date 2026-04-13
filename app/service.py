@@ -108,10 +108,12 @@ class ProductService:
         payload = intelligence.get("ui_response_json")
         if not isinstance(payload, dict) or not payload:
             return None
-        payload = dict(payload)
-        payload.setdefault("ticker", str(company.get("ticker", ticker.upper())))
-        payload.setdefault("filing_date", intelligence.get("filing_date"))
-        payload.setdefault("filing_type", intelligence.get("filing_type"))
+        payload = self._normalize_precomputed_ui_payload(
+            payload=dict(payload),
+            ticker=str(company.get("ticker", ticker.upper())),
+            filing_date=str(intelligence.get("filing_date") or ""),
+            filing_type=str(intelligence.get("filing_type") or ""),
+        )
         try:
             return self._validate_model(UiTickerIntelligenceResponse, payload)
         except Exception:
@@ -585,26 +587,27 @@ class ProductService:
             key_moves = key_moves[:5]
 
         risk_pairs = sorted(links.links, key=lambda row: (float(row.confidence), float(row.link_strength or 0)), reverse=True)[:3]
+        filing_date = str(snapshot.filing_date or dominant.filing_date or "")
+        filing_type = str(snapshot.filing_type or dominant.filing_type or "")
         narrative = self._build_ui_narrative(ticker=snapshot.ticker, themes=themes, risk_pairs=risk_pairs)
-
-        return UiTickerIntelligenceResponse(
+        payload = self._normalize_precomputed_ui_payload(
+            payload={
+                "ticker": snapshot.ticker,
+                "filing_date": filing_date,
+                "filing_type": filing_type,
+                "narrative": narrative,
+                "summary": narrative,
+                "strategic_arc": narrative,
+                "current_focus": narrative,
+                "themes": [theme.model_dump() if hasattr(theme, "model_dump") else dict(theme) for theme in themes],
+                "key_moves": [theme.model_dump() if hasattr(theme, "model_dump") else dict(theme) for theme in key_moves],
+                "risk_pairs": [pair.model_dump() if hasattr(pair, "model_dump") else dict(pair) for pair in risk_pairs],
+            },
             ticker=snapshot.ticker,
-            filing_date=snapshot.filing_date or dominant.filing_date,
-            filing_type=snapshot.filing_type or dominant.filing_type,
-            narrative=narrative,
-            summary=narrative,
-            strategic_arc=narrative,
-            current_focus=narrative,
-            history_timeline=[],
-            changes=[],
-            evolution_points=[],
-            durable_themes=[],
-            implications=[],
-            confidence_coverage=None,
-            themes=themes,
-            key_moves=key_moves,
-            risk_pairs=risk_pairs,
+            filing_date=filing_date,
+            filing_type=filing_type,
         )
+        return self._validate_model(UiTickerIntelligenceResponse, payload)
 
     def search_companies(self, query: str, limit: int) -> CompanySearchResponse:
         rows = self.repo.search_companies(query, limit=limit)
@@ -1900,3 +1903,217 @@ class ProductService:
             response = label_display_name(str(top.response or "")) or str(top.response or "")
             text += f" Main pressure point: {risk}, with response concentrated in {response}."
         return text
+
+    def _ui_direction_label(self, direction: str, role: str) -> str:
+        normalized_direction = str(direction or "stable").lower()
+        normalized_role = str(role or "supporting_driver")
+        if normalized_role == "fading_theme":
+            return "Fading from prominence"
+        if normalized_direction == "new":
+            return "Emerging more clearly"
+        if normalized_direction == "increasing":
+            return "Gaining emphasis"
+        if normalized_direction == "decreasing":
+            return "Losing emphasis"
+        if normalized_role == "core_driver":
+            return "Continuing as a core pillar"
+        if normalized_role == "constraint":
+            return "Persistent execution pressure"
+        return "Persistent but secondary"
+
+    def _ui_signal_role_from_theme(self, row: dict[str, Any]) -> str:
+        direction = str(row.get("direction") or "stable").lower()
+        dimension_key = str(row.get("dimension_key") or "")
+        score = float(row.get("score", 0.0) or 0.0)
+        if dimension_key == "risk_posture":
+            return "constraint"
+        if direction == "decreasing":
+            return "fading_theme"
+        if direction in {"new", "increasing"} and score < 0.75:
+            return "emerging_theme"
+        if score >= 0.75:
+            return "core_driver"
+        return "supporting_driver"
+
+    def _ui_signal_from_theme_row(self, row: dict[str, Any], *, filing_type: str, filing_date: str) -> dict[str, Any]:
+        theme_key = str(row.get("theme_key") or "")
+        direction = str(row.get("direction") or "stable").lower()
+        if direction not in {"increasing", "stable", "decreasing", "new"}:
+            direction = "stable"
+        role = self._ui_signal_role_from_theme(row)
+        evidence_rows = list(row.get("evidence") or [])
+        first_evidence = next(
+            (
+                item
+                for item in evidence_rows
+                if isinstance(item, dict) and str(item.get("quote") or "").strip()
+            ),
+            {},
+        )
+        score = float(row.get("score", 0.0) or 0.0)
+        return {
+            "title": str(row.get("label") or label_display_name(theme_key) or theme_key.replace("_", " ").title() or "Strategic signal"),
+            "role": role,
+            "direction": direction,
+            "direction_label": self._ui_direction_label(direction, role),
+            "confidence_label": self._confidence_label(score),
+            "interpretation": str(row.get("source_insight") or self._investor_why(theme_key)),
+            "why_it_matters": self._investor_why(theme_key),
+            "evidence_snippet": self._evidence_snippet(str(first_evidence.get("quote") or "")),
+            "filing_type": str(first_evidence.get("filing_type") or filing_type),
+            "filing_date": str(first_evidence.get("filing_date") or filing_date),
+            "theme_key": theme_key or None,
+            "dimension_key": str(row.get("dimension_key") or "") or None,
+            "score": round(score, 3) if score else None,
+            "delta": float(row.get("delta", 0.0) or 0.0) if row.get("delta") is not None else None,
+        }
+
+    def _normalize_precomputed_ui_payload(
+        self,
+        *,
+        payload: dict[str, Any],
+        ticker: str,
+        filing_date: str,
+        filing_type: str,
+    ) -> dict[str, Any]:
+        normalized = dict(payload)
+        normalized["ticker"] = str(normalized.get("ticker") or ticker.upper())
+        normalized["filing_date"] = str(normalized.get("filing_date") or filing_date or "")
+        normalized["filing_type"] = str(normalized.get("filing_type") or filing_type or "")
+
+        overall_strategy_story = str(
+            normalized.get("overall_strategy_story")
+            or normalized.get("strategic_arc")
+            or normalized.get("summary")
+            or normalized.get("narrative")
+            or ""
+        ).strip()
+        narrative = str(normalized.get("narrative") or overall_strategy_story).strip()
+        current_focus = str(
+            normalized.get("current_focus")
+            or normalized.get("summary")
+            or normalized.get("narrative")
+            or overall_strategy_story
+            or ""
+        ).strip()
+
+        themes = list(normalized.get("themes") or [])
+        key_moves = list(normalized.get("key_moves") or themes[:3])
+        top_current_signals = list(normalized.get("top_current_signals") or [])
+        if not top_current_signals:
+            top_current_signals = [
+                self._ui_signal_from_theme_row(row, filing_type=normalized["filing_type"], filing_date=normalized["filing_date"])
+                for row in key_moves[:3]
+                if isinstance(row, dict)
+            ]
+
+        strategy_evolution = list(normalized.get("strategy_evolution") or [])
+        if not strategy_evolution:
+            strategy_evolution = []
+            for row in list(normalized.get("history_timeline") or [])[:6]:
+                if not isinstance(row, dict):
+                    continue
+                strategy_evolution.append(
+                    {
+                        "filing_type": str(row.get("filing_type") or ""),
+                        "filing_date": str(row.get("filing_date") or ""),
+                        "short_summary": str(row.get("takeaway") or "Strategic visibility was limited in this filing."),
+                        "themes": [str(item) for item in list(row.get("top_themes") or [])[:3] if str(item or "").strip()],
+                    }
+                )
+
+        confidence_coverage = dict(normalized.get("confidence_coverage") or {})
+        confidence_label = str(confidence_coverage.get("confidence") or "Emerging")
+        if confidence_label not in {"Strong", "Moderate", "Emerging"}:
+            confidence_label = self._confidence_label(
+                max(
+                    [float(row.get("score", 0.0) or 0.0) for row in top_current_signals if isinstance(row, dict)],
+                    default=0.0,
+                )
+            )
+        coverage_label = str(confidence_coverage.get("coverage") or "")
+        if coverage_label not in {"High", "Medium", "Low"}:
+            if len(top_current_signals) >= 3:
+                coverage_label = "Medium"
+            elif len(top_current_signals) >= 1:
+                coverage_label = "Low"
+            else:
+                coverage_label = "Low"
+        confidence_coverage = {"confidence": confidence_label, "coverage": coverage_label}
+
+        durable_themes = [
+            str(item).strip()
+            for item in list(
+                (normalized.get("snapshot_metadata") or {}).get("durable_themes")
+                or normalized.get("durable_themes")
+                or []
+            )[:3]
+            if str(item or "").strip()
+        ]
+        filing_basis = " • ".join(part for part in [normalized["filing_type"], normalized["filing_date"]] if part)
+        snapshot_metadata = dict(normalized.get("snapshot_metadata") or {})
+        snapshot_metadata = {
+            "confidence_label": str(snapshot_metadata.get("confidence_label") or confidence_label),
+            "coverage_note": str(
+                snapshot_metadata.get("coverage_note")
+                or (
+                    "Broad visibility across filings"
+                    if coverage_label == "High"
+                    else "Moderate visibility across filings"
+                    if coverage_label == "Medium"
+                    else "Limited visibility; current conclusions should remain provisional"
+                )
+            ),
+            "signal_set_note": str(
+                snapshot_metadata.get("signal_set_note")
+                or ("Concentrated around a few high-signal themes" if len(top_current_signals) >= 2 else "Sparse signal set")
+            ),
+            "filing_basis": str(snapshot_metadata.get("filing_basis") or filing_basis or "Latest filing"),
+            "durable_themes": durable_themes,
+        }
+
+        supporting_context = [
+            str(item).strip()
+            for item in list(normalized.get("supporting_context") or [])
+            if str(item or "").strip()
+        ][:3]
+        if not supporting_context:
+            supporting_context = [snapshot_metadata["coverage_note"], snapshot_metadata["signal_set_note"]]
+            if not list(normalized.get("risk_pairs") or []):
+                supporting_context.append("No strong risk-response pair stands out clearly in the current filing window.")
+            supporting_context = supporting_context[:3]
+
+        what_changed = [
+            str(item).strip()
+            for item in list(normalized.get("what_changed") or normalized.get("changes") or [])
+            if str(item or "").strip()
+        ][:3]
+        strategic_implications = [
+            str(item).strip()
+            for item in list(normalized.get("strategic_implications") or normalized.get("implications") or [])
+            if str(item or "").strip()
+        ][:3]
+
+        normalized.update(
+            {
+                "narrative": narrative or overall_strategy_story,
+                "summary": overall_strategy_story or narrative,
+                "overall_strategy_story": overall_strategy_story or narrative,
+                "strategic_arc": overall_strategy_story or narrative,
+                "current_focus": current_focus or overall_strategy_story or narrative,
+                "top_current_signals": top_current_signals[:3],
+                "what_changed": what_changed,
+                "strategy_evolution": strategy_evolution[:6],
+                "snapshot_metadata": snapshot_metadata,
+                "supporting_context": supporting_context,
+                "changes": what_changed,
+                "durable_themes": durable_themes,
+                "strategic_implications": strategic_implications,
+                "implications": strategic_implications,
+                "confidence_coverage": confidence_coverage,
+                "themes": themes,
+                "key_moves": key_moves,
+                "risk_pairs": list(normalized.get("risk_pairs") or []),
+            }
+        )
+        return normalized

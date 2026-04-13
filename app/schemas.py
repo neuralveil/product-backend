@@ -141,11 +141,43 @@ class UiTheme(BaseModel):
     persistence_score: float | None = None
 
 
+class UiCurrentSignal(BaseModel):
+    title: str
+    role: str
+    direction_label: str
+    confidence_label: str
+    interpretation: str
+    why_it_matters: str
+    evidence_snippet: str
+    filing_type: str
+    filing_date: str
+    theme_key: str | None = None
+    dimension_key: str | None = None
+    score: float | None = None
+    delta: float | None = None
+    direction: str | None = None
+
+
 class UiHistoryPoint(BaseModel):
     filing_date: str | None = None
     filing_type: str | None = None
     top_themes: list[str] = []
     takeaway: str | None = None
+
+
+class UiStrategyEvolutionCard(BaseModel):
+    filing_type: str
+    filing_date: str
+    short_summary: str
+    themes: list[str] = []
+
+
+class UiSnapshotMetadata(BaseModel):
+    confidence_label: str
+    coverage_note: str
+    signal_set_note: str
+    filing_basis: str
+    durable_themes: list[str] = []
 
 
 class UiTickerIntelligenceResponse(BaseModel):
@@ -154,13 +186,20 @@ class UiTickerIntelligenceResponse(BaseModel):
     filing_type: str | None = None
     narrative: str
     summary: str | None = None
+    overall_strategy_story: str | None = None
     strategic_arc: str | None = None
     current_focus: str | None = None
     history_timeline: list[UiHistoryPoint] = []
+    top_current_signals: list[UiCurrentSignal] = []
+    what_changed: list[str] = []
+    strategy_evolution: list[UiStrategyEvolutionCard] = []
+    snapshot_metadata: UiSnapshotMetadata | None = None
+    supporting_context: list[str] = []
     changes: list[str] = []
     evolution_points: list[str] = []
     durable_themes: list[str] = []
     implications: list[str] = []
+    strategic_implications: list[str] = []
     confidence_coverage: Optional["TickerConfidenceCoverage"] = None
     themes: list[UiTheme]
     key_moves: list[UiTheme]
