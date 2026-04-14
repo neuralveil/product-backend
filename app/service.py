@@ -1997,6 +1997,33 @@ class ProductService:
             or ""
         ).strip()
 
+        risk_pairs = list(normalized.get("risk_pairs") or [])
+        if not risk_pairs:
+            risk_pairs = []
+            for pair in list(normalized.get("risk_response_pairs") or [])[:3]:
+                if not isinstance(pair, dict):
+                    continue
+                risk_pairs.append(
+                    {
+                        "risk": str(pair.get("risk") or pair.get("risk_label") or ""),
+                        "response": str(pair.get("response") or pair.get("response_label") or ""),
+                        "direction": str(pair.get("direction") or "mitigation"),
+                        "quarter": str(pair.get("quarter") or ""),
+                        "confidence": float(pair.get("confidence", 0.0) or 0.0),
+                        "link_strength": float(pair.get("link_strength", 0.0) or 0.0) if pair.get("link_strength") is not None else None,
+                        "summary": str(pair.get("summary") or ""),
+                        "filing_date": str(pair.get("filing_date") or normalized["filing_date"]),
+                        "filing_type": str(pair.get("filing_type") or normalized["filing_type"]),
+                        "risk_score": float(pair.get("risk_score", 0.0) or 0.0),
+                        "response_score": float(pair.get("response_score", 0.0) or 0.0),
+                        "risk_delta": float(pair.get("risk_delta", 0.0) or 0.0),
+                        "response_delta": float(pair.get("response_delta", 0.0) or 0.0),
+                        "evidence_quote_risk": pair.get("evidence_quote_risk"),
+                        "evidence_quote_response": pair.get("evidence_quote_response"),
+                        "confidence_reason": pair.get("confidence_reason"),
+                    }
+                )
+
         themes = list(normalized.get("themes") or [])
         key_moves = list(normalized.get("key_moves") or themes[:3])
         top_current_signals = list(normalized.get("top_current_signals") or [])
@@ -2079,7 +2106,7 @@ class ProductService:
         ][:3]
         if not supporting_context:
             supporting_context = [snapshot_metadata["coverage_note"], snapshot_metadata["signal_set_note"]]
-            if not list(normalized.get("risk_pairs") or []):
+            if not risk_pairs:
                 supporting_context.append("No strong risk-response pair stands out clearly in the current filing window.")
             supporting_context = supporting_context[:3]
 
@@ -2113,7 +2140,7 @@ class ProductService:
                 "confidence_coverage": confidence_coverage,
                 "themes": themes,
                 "key_moves": key_moves,
-                "risk_pairs": list(normalized.get("risk_pairs") or []),
+                "risk_pairs": risk_pairs,
             }
         )
         return normalized
