@@ -1986,6 +1986,133 @@ class ProductService:
             "delta": float(row.get("delta", 0.0) or 0.0) if row.get("delta") is not None else None,
         }
 
+    def _normalize_date_key(self, value: Any) -> str:
+        text = str(value or "").strip()
+        return text[:10] if len(text) >= 10 else text
+
+    def _build_evolution_evidence_pool(
+        self,
+        *,
+        top_current_signals: list[dict[str, Any]],
+        themes: list[dict[str, Any]],
+        risk_pairs: list[dict[str, Any]],
+    ) -> list[dict[str, str]]:
+        pool: list[dict[str, str]] = []
+        seen: set[str] = set()
+
+        def append_item(quote: str, filing_date: Any, filing_type: Any, theme_key: Any = "") -> None:
+            cleaned = self._evidence_snippet(str(quote or ""))
+            if not cleaned:
+                return
+            item = {
+                "quote": cleaned,
+                "filing_date": self._normalize_date_key(filing_date),
+                "filing_type": str(filing_type or "").upper().strip(),
+                "theme_key": self._canonical_theme_key(str(theme_key or "")),
+            }
+            dedupe = f'{item["quote"].lower()}|{item["filing_date"]}|{item["filing_type"]}|{item["theme_key"]}'
+            if dedupe in seen:
+                return
+            seen.add(dedupe)
+            pool.append(item)
+
+        for row in top_current_signals:
+            if not isinstance(row, dict):
+                continue
+            append_item(
+                quote=row.get("evidence_snippet"),
+                filing_date=row.get("filing_date"),
+                filing_type=row.get("filing_type"),
+                theme_key=row.get("theme_key") or row.get("title"),
+            )
+
+        for row in themes:
+            if not isinstance(row, dict):
+                continue
+            theme_key = row.get("theme_key") or row.get("id") or row.get("label")
+            for evidence in list(row.get("evidence") or [])[:2]:
+                if not isinstance(evidence, dict):
+                    continue
+                append_item(
+                    quote=evidence.get("quote"),
+                    filing_date=evidence.get("filing_date"),
+                    filing_type=evidence.get("filing_type"),
+                    theme_key=theme_key,
+                )
+
+        for row in risk_pairs:
+            if not isinstance(row, dict):
+                continue
+            append_item(
+                quote=row.get("evidence_quote_response") or row.get("evidence_quote_risk"),
+                filing_date=row.get("filing_date"),
+                filing_type=row.get("filing_type"),
+                theme_key=row.get("response") or row.get("risk"),
+            )
+
+        return pool
+
+    def _enrich_strategy_evolution_evidence(
+        self,
+        *,
+        strategy_evolution: list[dict[str, Any]],
+        top_current_signals: list[dict[str, Any]],
+        themes: list[dict[str, Any]],
+        risk_pairs: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not strategy_evolution:
+            return strategy_evolution
+        pool = self._build_evolution_evidence_pool(
+            top_current_signals=top_current_signals,
+            themes=themes,
+            risk_pairs=risk_pairs,
+        )
+        if not pool:
+            return strategy_evolution
+
+        used_keys: set[str] = set()
+        out: list[dict[str, Any]] = []
+        for row in strategy_evolution:
+            if not isinstance(row, dict):
+                continue
+            current = dict(row)
+            existing = self._evidence_snippet(str(current.get("evidence_snippet") or ""))
+            if existing:
+                out.append(current)
+                continue
+
+            date_key = self._normalize_date_key(current.get("filing_date"))
+            type_key = str(current.get("filing_type") or "").upper().strip()
+            theme_keys = {
+                self._canonical_theme_key(str(item or ""))
+                for item in list(current.get("themes") or [])[:3]
+                if str(item or "").strip()
+            }
+
+            ranked: list[tuple[int, dict[str, str]]] = []
+            for item in pool:
+                dedupe_key = f'{item["quote"].lower()}|{item["filing_date"]}|{item["filing_type"]}|{item["theme_key"]}'
+                score = 0
+                if date_key and item["filing_date"] == date_key:
+                    score += 6
+                if type_key and item["filing_type"] == type_key:
+                    score += 3
+                if item["theme_key"] and item["theme_key"] in theme_keys:
+                    score += 5
+                if dedupe_key not in used_keys:
+                    score += 1
+                ranked.append((score, item))
+
+            ranked.sort(key=lambda x: x[0], reverse=True)
+            if ranked:
+                best = ranked[0][1]
+                current["evidence_snippet"] = best["quote"]
+                used = f'{best["quote"].lower()}|{best["filing_date"]}|{best["filing_type"]}|{best["theme_key"]}'
+                used_keys.add(used)
+            out.append(current)
+
+        return out
+
     def _normalize_precomputed_ui_payload(
         self,
         *,
@@ -2069,8 +2196,15 @@ class ProductService:
                         "filing_date": str(row.get("filing_date") or ""),
                         "short_summary": str(row.get("takeaway") or "Strategic visibility was limited in this filing."),
                         "themes": [str(item) for item in list(row.get("top_themes") or [])[:3] if str(item or "").strip()],
+                        "evidence_snippet": self._evidence_snippet(str(row.get("evidence_snippet") or "")),
                     }
                 )
+        strategy_evolution = self._enrich_strategy_evolution_evidence(
+            strategy_evolution=[row for row in strategy_evolution if isinstance(row, dict)],
+            top_current_signals=[row for row in top_current_signals if isinstance(row, dict)],
+            themes=[row for row in themes if isinstance(row, dict)],
+            risk_pairs=[row for row in risk_pairs if isinstance(row, dict)],
+        )
 
         confidence_coverage = dict(normalized.get("confidence_coverage") or {})
         confidence_label = str(confidence_coverage.get("confidence") or "Emerging")

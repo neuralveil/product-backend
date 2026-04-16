@@ -163,6 +163,7 @@ class UiHistoryPoint(BaseModel):
     filing_type: str | None = None
     top_themes: list[str] = []
     takeaway: str | None = None
+    evidence_snippet: str | None = None
 
 
 class UiStrategyEvolutionCard(BaseModel):
@@ -170,6 +171,7 @@ class UiStrategyEvolutionCard(BaseModel):
     filing_date: str
     short_summary: str
     themes: list[str] = []
+    evidence_snippet: str | None = None
 
 
 class UiSnapshotMetadata(BaseModel):
