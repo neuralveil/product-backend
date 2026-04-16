@@ -376,8 +376,24 @@ class ProductService:
         return response
 
     def get_ui_ticker_intelligence(self, ticker: str) -> UiTickerIntelligenceResponse:
-        precomputed = self._load_precomputed_ui_intelligence(ticker.upper().strip())
+        normalized_ticker = ticker.upper().strip()
+        precomputed = self._load_precomputed_ui_intelligence(normalized_ticker)
         if precomputed is not None:
+            # Keep precomputed payloads fast, but patch in live risk-response links
+            # when historical stored JSON is missing them.
+            if not precomputed.risk_pairs:
+                try:
+                    links = self.get_strategy_response_links(normalized_ticker, limit=40, latest_only=True)
+                    if not links.links:
+                        links = self.get_strategy_response_links(normalized_ticker, limit=40, latest_only=False)
+                    if links.links:
+                        precomputed.risk_pairs = sorted(
+                            links.links,
+                            key=lambda row: (float(row.confidence), float(row.link_strength or 0)),
+                            reverse=True,
+                        )[:3]
+                except Exception:
+                    pass
             return precomputed
 
         snapshot = self.get_strategy_snapshot(ticker)
@@ -385,6 +401,8 @@ class ProductService:
         # Keep this endpoint lightweight for UI latency and reliability.
         signals = self.get_strategy_signals(ticker, limit=80, latest_only=True, include_score_components=False)
         links = self.get_strategy_response_links(ticker, limit=40, latest_only=True)
+        if not links.links:
+            links = self.get_strategy_response_links(ticker, limit=40, latest_only=False)
         dominant_rows = list(dominant.dominant_themes or [])[:5]
 
         aggregated: dict[str, UiTheme] = {}
@@ -2000,7 +2018,12 @@ class ProductService:
         risk_pairs = list(normalized.get("risk_pairs") or [])
         if not risk_pairs:
             risk_pairs = []
-            for pair in list(normalized.get("risk_response_pairs") or [])[:3]:
+            source_pairs = (
+                list(normalized.get("risk_response_pairs") or [])
+                or list(normalized.get("risk_response_links") or [])
+                or list(normalized.get("risk_response") or [])
+            )
+            for pair in source_pairs[:3]:
                 if not isinstance(pair, dict):
                     continue
                 risk_pairs.append(
