@@ -2076,10 +2076,29 @@ class ProductService:
             if not isinstance(row, dict):
                 continue
             current = dict(row)
+            existing_items: list[dict[str, str]] = []
+            for item in list(current.get("evidence_items") or [])[:3]:
+                if not isinstance(item, dict):
+                    continue
+                cleaned = self._evidence_snippet(str(item.get("quote") or ""))
+                if not cleaned:
+                    continue
+                existing_items.append(
+                    {
+                        "quote": cleaned,
+                        "filing_date": self._normalize_date_key(item.get("filing_date") or current.get("filing_date")),
+                        "filing_type": str(item.get("filing_type") or current.get("filing_type") or "").upper().strip(),
+                    }
+                )
             existing = self._evidence_snippet(str(current.get("evidence_snippet") or ""))
-            if existing:
-                out.append(current)
-                continue
+            if existing and not existing_items:
+                existing_items.append(
+                    {
+                        "quote": existing,
+                        "filing_date": self._normalize_date_key(current.get("filing_date")),
+                        "filing_type": str(current.get("filing_type") or "").upper().strip(),
+                    }
+                )
 
             date_key = self._normalize_date_key(current.get("filing_date"))
             type_key = str(current.get("filing_type") or "").upper().strip()
@@ -2091,7 +2110,7 @@ class ProductService:
 
             ranked: list[tuple[int, dict[str, str]]] = []
             for item in pool:
-                dedupe_key = f'{item["quote"].lower()}|{item["filing_date"]}|{item["filing_type"]}|{item["theme_key"]}'
+                dedupe_key = f'{item["quote"].lower()}|{item["filing_date"]}|{item["filing_type"]}'
                 score = 0
                 if date_key and item["filing_date"] == date_key:
                     score += 6
@@ -2104,11 +2123,43 @@ class ProductService:
                 ranked.append((score, item))
 
             ranked.sort(key=lambda x: x[0], reverse=True)
-            if ranked:
-                best = ranked[0][1]
-                current["evidence_snippet"] = best["quote"]
-                used = f'{best["quote"].lower()}|{best["filing_date"]}|{best["filing_type"]}|{best["theme_key"]}'
-                used_keys.add(used)
+            selected: list[dict[str, str]] = []
+            selected_seen: set[str] = set()
+
+            def add_selected(item: dict[str, str]) -> None:
+                dedupe = f'{item["quote"].lower()}|{item["filing_date"]}|{item["filing_type"]}'
+                if dedupe in selected_seen:
+                    return
+                selected_seen.add(dedupe)
+                selected.append(item)
+
+            for item in existing_items:
+                add_selected(item)
+
+            for _, item in ranked:
+                if len(selected) >= 3:
+                    break
+                add_selected(
+                    {
+                        "quote": item["quote"],
+                        "filing_date": item["filing_date"],
+                        "filing_type": item["filing_type"],
+                    }
+                )
+
+            if selected:
+                current["evidence_items"] = [
+                    {
+                        "quote": item["quote"],
+                        "filing_date": item["filing_date"] or None,
+                        "filing_type": item["filing_type"] or None,
+                        "source_kind": "quote",
+                    }
+                    for item in selected[:3]
+                ]
+                current["evidence_snippet"] = selected[0]["quote"]
+                for item in selected[:3]:
+                    used_keys.add(f'{item["quote"].lower()}|{item["filing_date"]}|{item["filing_type"]}')
             out.append(current)
 
         return out
@@ -2197,6 +2248,7 @@ class ProductService:
                         "short_summary": str(row.get("takeaway") or "Strategic visibility was limited in this filing."),
                         "themes": [str(item) for item in list(row.get("top_themes") or [])[:3] if str(item or "").strip()],
                         "evidence_snippet": self._evidence_snippet(str(row.get("evidence_snippet") or "")),
+                        "evidence_items": list(row.get("evidence_items") or []),
                     }
                 )
         strategy_evolution = self._enrich_strategy_evolution_evidence(

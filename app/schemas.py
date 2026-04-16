@@ -164,6 +164,7 @@ class UiHistoryPoint(BaseModel):
     top_themes: list[str] = []
     takeaway: str | None = None
     evidence_snippet: str | None = None
+    evidence_items: list[UiThemeEvidence] = []
 
 
 class UiStrategyEvolutionCard(BaseModel):
@@ -172,6 +173,7 @@ class UiStrategyEvolutionCard(BaseModel):
     short_summary: str
     themes: list[str] = []
     evidence_snippet: str | None = None
+    evidence_items: list[UiThemeEvidence] = []
 
 
 class UiSnapshotMetadata(BaseModel):
