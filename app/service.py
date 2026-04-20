@@ -2112,10 +2112,12 @@ class ProductService:
                 selected.append(item)
                 return True
 
-            # First pass: avoid reusing quotes already assigned to earlier filings.
+            # First pass: strict date match for this evolution row.
             for _, item in ranked:
                 if len(selected) >= 3:
                     break
+                if date_key and item["filing_date"] != date_key:
+                    continue
                 add_selected(
                     {
                         "quote": item["quote"],
@@ -2125,11 +2127,31 @@ class ProductService:
                     skip_if_used=True,
                 )
 
-            # Second pass: if sparse, allow reuse as fallback.
+            # Second pass: same filing type (e.g., 10-Q) if exact-date evidence is sparse.
+            if len(selected) < 3:
+                for _, item in ranked:
+                    if len(selected) >= 3:
+                        break
+                    if date_key and item["filing_date"] == date_key:
+                        continue
+                    if type_key and item["filing_type"] != type_key:
+                        continue
+                    add_selected(
+                        {
+                            "quote": item["quote"],
+                            "filing_date": item["filing_date"],
+                            "filing_type": item["filing_type"],
+                        },
+                        skip_if_used=True,
+                    )
+
+            # Final fallback: allow reuse only when filing-aligned evidence cannot be found.
             if not selected:
                 for _, item in ranked:
                     if len(selected) >= 3:
                         break
+                    if date_key and item["filing_date"] != date_key and (not type_key or item["filing_type"] != type_key):
+                        continue
                     add_selected(
                         {
                             "quote": item["quote"],
