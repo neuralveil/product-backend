@@ -2076,30 +2076,6 @@ class ProductService:
             if not isinstance(row, dict):
                 continue
             current = dict(row)
-            existing_items: list[dict[str, str]] = []
-            for item in list(current.get("evidence_items") or [])[:3]:
-                if not isinstance(item, dict):
-                    continue
-                cleaned = self._evidence_snippet(str(item.get("quote") or ""))
-                if not cleaned:
-                    continue
-                existing_items.append(
-                    {
-                        "quote": cleaned,
-                        "filing_date": self._normalize_date_key(item.get("filing_date") or current.get("filing_date")),
-                        "filing_type": str(item.get("filing_type") or current.get("filing_type") or "").upper().strip(),
-                    }
-                )
-            existing = self._evidence_snippet(str(current.get("evidence_snippet") or ""))
-            if existing and not existing_items:
-                existing_items.append(
-                    {
-                        "quote": existing,
-                        "filing_date": self._normalize_date_key(current.get("filing_date")),
-                        "filing_type": str(current.get("filing_type") or "").upper().strip(),
-                    }
-                )
-
             date_key = self._normalize_date_key(current.get("filing_date"))
             type_key = str(current.get("filing_type") or "").upper().strip()
             theme_keys = {
@@ -2126,16 +2102,17 @@ class ProductService:
             selected: list[dict[str, str]] = []
             selected_seen: set[str] = set()
 
-            def add_selected(item: dict[str, str]) -> None:
+            def add_selected(item: dict[str, str], *, skip_if_used: bool) -> bool:
                 dedupe = f'{item["quote"].lower()}|{item["filing_date"]}|{item["filing_type"]}'
                 if dedupe in selected_seen:
-                    return
+                    return False
+                if skip_if_used and dedupe in used_keys:
+                    return False
                 selected_seen.add(dedupe)
                 selected.append(item)
+                return True
 
-            for item in existing_items:
-                add_selected(item)
-
+            # First pass: avoid reusing quotes already assigned to earlier filings.
             for _, item in ranked:
                 if len(selected) >= 3:
                     break
@@ -2144,8 +2121,23 @@ class ProductService:
                         "quote": item["quote"],
                         "filing_date": item["filing_date"],
                         "filing_type": item["filing_type"],
-                    }
+                    },
+                    skip_if_used=True,
                 )
+
+            # Second pass: if sparse, allow reuse as fallback.
+            if not selected:
+                for _, item in ranked:
+                    if len(selected) >= 3:
+                        break
+                    add_selected(
+                        {
+                            "quote": item["quote"],
+                            "filing_date": item["filing_date"],
+                            "filing_type": item["filing_type"],
+                        },
+                        skip_if_used=False,
+                    )
 
             if selected:
                 current["evidence_items"] = [
