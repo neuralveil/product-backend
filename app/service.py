@@ -943,7 +943,13 @@ class ProductService:
                     "quarter": str(row.get("quarter", "")),
                     "confidence": confidence,
                     "link_strength": link_strength,
-                    "summary": f"{risk_label} increased while {response_label} increased.",
+                    "summary": self._response_link_summary(
+                        risk_label=risk_label,
+                        response_label=response_label,
+                        risk_delta=risk_delta,
+                        response_delta=response_delta,
+                        link_strength=link_strength,
+                    ),
                     "filing_date": str(row.get("filing_date", "")),
                     "filing_type": str(row.get("filing_type", "")),
                     "risk_score": float(row.get("risk_score", 0) or 0),
@@ -965,6 +971,32 @@ class ProductService:
             ticker=str(company.get("ticker", ticker.upper())),
             links=links,
         )
+
+    def _response_link_summary(
+        self,
+        *,
+        risk_label: str,
+        response_label: str,
+        risk_delta: float,
+        response_delta: float,
+        link_strength: float,
+    ) -> str:
+        risk_text = risk_label or "Risk pressure"
+        response_text = response_label or "management action"
+
+        if risk_delta >= 0.08 and response_delta >= 0.08:
+            return f"{risk_text} is becoming more visible, and the company appears to be leaning further into {response_text} rather than stepping back."
+        if risk_delta >= 0.08 and response_delta > 0:
+            return f"{risk_text} is rising, with the company still responding through {response_text}."
+        if risk_delta >= 0.08 and response_delta <= 0:
+            return f"{risk_text} is rising, but the response is not strengthening alongside it."
+        if risk_delta > 0 and response_delta >= 0.08:
+            return f"The company still appears to be using {response_text} to absorb pressure from {risk_text}."
+        if response_delta >= 0.08:
+            return f"{response_text} is becoming more explicit as the company’s answer to {risk_text}."
+        if link_strength >= 0.6:
+            return f"{risk_text} and {response_text} are appearing together as a visible pressure-and-response pattern."
+        return f"{response_text} looks like the clearest company response to {risk_text} in the current filing window."
 
     def create_feedback(
         self,
