@@ -184,6 +184,24 @@ class UiSnapshotMetadata(BaseModel):
     durable_themes: list[str] = []
 
 
+class UiShareableTicker(BaseModel):
+    ticker: str
+    name: str
+    filing_date: str | None = None
+    filing_type: str | None = None
+    readiness_score: float
+    confidence_label: str
+    coverage_label: str
+    headline: str
+    reason: str
+    signals: list[str] = []
+    updated_at: str | None = None
+
+
+class UiShareableTickersResponse(BaseModel):
+    items: list[UiShareableTicker]
+
+
 class UiTickerIntelligenceResponse(BaseModel):
     ticker: str
     filing_date: str | None = None

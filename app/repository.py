@@ -88,6 +88,31 @@ class ProductRepository:
         except Exception:
             return None
 
+    def list_recent_strategy_intelligence(self, limit: int = 120) -> list[dict[str, Any]]:
+        try:
+            response = (
+                self.client.table("company_strategy_intelligence")
+                .select("company_id,filing_id,filing_date,filing_type,ui_response_json,core_response_json,updated_at")
+                .order("filing_date", desc=True)
+                .order("updated_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            return response.data or []
+        except Exception:
+            return []
+
+    def list_companies_by_ids(self, company_ids: list[int]) -> dict[int, dict[str, Any]]:
+        ids = sorted({int(company_id) for company_id in company_ids if company_id})
+        if not ids:
+            return {}
+        try:
+            response = self.client.table("companies").select("id,name,ticker").in_("id", ids).execute()
+            rows = response.data or []
+            return {int(row["id"]): row for row in rows if row.get("id") is not None}
+        except Exception:
+            return {}
+
     def list_company_strategy_scores_for_filing(self, company_id: int, filing_id: int) -> list[dict[str, Any]]:
         try:
             response = (

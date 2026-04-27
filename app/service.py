@@ -28,6 +28,8 @@ from app.schemas import (
     TickerSignalFiling,
     TickerTopSignal,
     TaxonomyCatalogResponse,
+    UiShareableTicker,
+    UiShareableTickersResponse,
     UiTheme,
     UiThemeEvidence,
     UiTickerIntelligenceResponse,
@@ -121,6 +123,47 @@ class ProductService:
 
     def get_taxonomy_catalog(self) -> TaxonomyCatalogResponse:
         return TaxonomyCatalogResponse(catalog=get_taxonomy_catalog_detailed())
+
+    def get_shareable_tickers(self, limit: int = 6) -> UiShareableTickersResponse:
+        rows = self.repo.list_recent_strategy_intelligence(limit=max(limit * 8, 80))
+        companies = self.repo.list_companies_by_ids(
+            [int(row.get("company_id", 0) or 0) for row in rows if row.get("company_id")]
+        )
+        best_by_ticker: dict[str, UiShareableTicker] = {}
+
+        for row in rows:
+            company = companies.get(int(row.get("company_id", 0) or 0))
+            if not company:
+                continue
+            ticker = str(company.get("ticker") or "").upper().strip()
+            if not ticker:
+                continue
+            payload = row.get("ui_response_json")
+            if not isinstance(payload, dict) or not payload:
+                payload = row.get("core_response_json")
+            if not isinstance(payload, dict) or not payload:
+                continue
+
+            candidate = self._shareable_ticker_from_payload(
+                ticker=ticker,
+                name=str(company.get("name") or ticker),
+                payload=payload,
+                filing_date=str(row.get("filing_date") or ""),
+                filing_type=str(row.get("filing_type") or ""),
+                updated_at=str(row.get("updated_at") or "") or None,
+            )
+            if not candidate:
+                continue
+            existing = best_by_ticker.get(ticker)
+            if existing is None or candidate.readiness_score > existing.readiness_score:
+                best_by_ticker[ticker] = candidate
+
+        items = sorted(
+            best_by_ticker.values(),
+            key=lambda item: (item.readiness_score, str(item.filing_date or ""), item.ticker),
+            reverse=True,
+        )[:limit]
+        return UiShareableTickersResponse(items=items)
 
     def get_ticker_intelligence(self, ticker: str) -> TickerIntelligenceResponse:
         normalized_ticker = ticker.upper().strip()
@@ -970,6 +1013,99 @@ class ProductService:
         return ClientStrategyResponseLinksResponse(
             ticker=str(company.get("ticker", ticker.upper())),
             links=links,
+        )
+
+    def _shareable_ticker_from_payload(
+        self,
+        *,
+        ticker: str,
+        name: str,
+        payload: dict[str, Any],
+        filing_date: str,
+        filing_type: str,
+        updated_at: str | None,
+    ) -> UiShareableTicker | None:
+        confidence_coverage = dict(payload.get("confidence_coverage") or {})
+        confidence_label = str(
+            confidence_coverage.get("confidence")
+            or (payload.get("snapshot_metadata") or {}).get("confidence_label")
+            or "Emerging"
+        )
+        if confidence_label not in {"Strong", "Moderate", "Emerging"}:
+            confidence_label = "Emerging"
+
+        coverage_label = str(confidence_coverage.get("coverage") or "")
+        if coverage_label not in {"High", "Medium", "Low"}:
+            coverage_label = "Low"
+
+        top_signals = list(payload.get("top_current_signals") or payload.get("top_signals") or [])
+        themes = list(payload.get("key_moves") or payload.get("themes") or [])
+        evolution = list(payload.get("strategy_evolution") or payload.get("history_timeline") or [])
+        risk_pairs = list(payload.get("risk_pairs") or payload.get("risk_response") or [])
+        narrative = str(
+            payload.get("summary")
+            or payload.get("overall_strategy_story")
+            or payload.get("strategic_arc")
+            or payload.get("narrative")
+            or ""
+        ).strip()
+
+        signal_labels: list[str] = []
+        for row in top_signals[:3]:
+            if isinstance(row, dict):
+                title = str(row.get("title") or row.get("theme_label") or "").strip()
+                if title and title not in signal_labels:
+                    signal_labels.append(title)
+        if not signal_labels:
+            for row in themes[:3]:
+                if isinstance(row, dict):
+                    label = str(row.get("label") or row.get("theme_key") or row.get("id") or "").strip()
+                    if label and label not in signal_labels:
+                        signal_labels.append(label_display_name(label) if "_" in label else label)
+
+        if not narrative and not signal_labels:
+            return None
+
+        confidence_points = {"Strong": 34.0, "Moderate": 24.0, "Emerging": 12.0}[confidence_label]
+        coverage_points = {"High": 24.0, "Medium": 16.0, "Low": 7.0}[coverage_label]
+        signal_points = min(len(signal_labels), 3) * 8.0
+        evidence_points = min(len(evolution), 4) * 3.0 + min(len(risk_pairs), 2) * 3.0
+        narrative_points = min(len(narrative.split()), 45) / 45.0 * 14.0 if narrative else 0.0
+        freshness_points = 8.0 if filing_date else 0.0
+        readiness = round(
+            min(100.0, confidence_points + coverage_points + signal_points + evidence_points + narrative_points + freshness_points),
+            1,
+        )
+
+        if readiness < 38.0:
+            return None
+
+        headline = narrative or f"{ticker} has a shareable strategy read built from recent filing signals."
+        headline = self._evidence_snippet(headline)
+        if len(headline) > 170:
+            headline = headline[:167].rstrip(" ,;:.") + "..."
+
+        if confidence_label == "Strong" and len(signal_labels) >= 2:
+            reason = "High-confidence read with multiple client-friendly signals."
+        elif risk_pairs:
+            reason = "Useful now because the risk and response pattern is explicit."
+        elif len(evolution) >= 2:
+            reason = "Good client share because the filing story has enough history."
+        else:
+            reason = "Shareable as a focused current-strategy snapshot."
+
+        return UiShareableTicker(
+            ticker=ticker,
+            name=name,
+            filing_date=filing_date or None,
+            filing_type=filing_type or None,
+            readiness_score=readiness,
+            confidence_label=confidence_label,
+            coverage_label=coverage_label,
+            headline=headline,
+            reason=reason,
+            signals=signal_labels[:3],
+            updated_at=updated_at,
         )
 
     def _response_link_summary(

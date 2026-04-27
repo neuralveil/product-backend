@@ -17,6 +17,7 @@ from app.schemas import (
     HealthResponse,
     TaxonomyCatalogResponse,
     TickerIntelligenceResponse,
+    UiShareableTickersResponse,
     UiTickerIntelligenceResponse,
 )
 from app.service import ProductService
@@ -68,6 +69,19 @@ def search_companies(
 ):
     try:
         return service.search_companies(query=q, limit=limit)
+    except Exception as exc:
+        http_exc = to_http_error(exc)
+        return JSONResponse(status_code=http_exc.status_code, content={"detail": str(http_exc.detail)})
+
+
+@app.get(
+    "/v1/ui/shareable-tickers",
+    response_model=UiShareableTickersResponse,
+    responses={500: {"model": ErrorResponse}},
+)
+def get_shareable_tickers(limit: int = Query(default=6, ge=1, le=12)):
+    try:
+        return service.get_shareable_tickers(limit=limit)
     except Exception as exc:
         http_exc = to_http_error(exc)
         return JSONResponse(status_code=http_exc.status_code, content={"detail": str(http_exc.detail)})
