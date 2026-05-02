@@ -2246,6 +2246,29 @@ class ProductService:
             current = dict(row)
             date_key = self._normalize_date_key(current.get("filing_date"))
             type_key = str(current.get("filing_type") or "").upper().strip()
+            existing_items: list[dict[str, Any]] = []
+            for existing in list(current.get("evidence_items") or []):
+                if not isinstance(existing, dict):
+                    continue
+                quote = str(existing.get("quote") or "").strip()
+                if not quote:
+                    continue
+                existing_date = self._normalize_date_key(existing.get("filing_date"))
+                existing_type = str(existing.get("filing_type") or "").upper().strip()
+                if date_key and existing_date and existing_date != date_key:
+                    continue
+                if type_key and existing_type and existing_type != type_key:
+                    continue
+                existing_items.append(
+                    {
+                        "quote": quote,
+                        "filing_date": existing_date or date_key or None,
+                        "filing_type": existing_type or type_key or None,
+                        "source_kind": "quote",
+                    }
+                )
+            current["evidence_items"] = existing_items[:3]
+            current["evidence_snippet"] = existing_items[0]["quote"] if existing_items else ""
             theme_keys = {
                 self._canonical_theme_key(str(item or ""))
                 for item in list(current.get("themes") or [])[:3]
@@ -2294,40 +2317,6 @@ class ProductService:
                     },
                     skip_if_used=True,
                 )
-
-            # Second pass: same filing type (e.g., 10-Q) if exact-date evidence is sparse.
-            if len(selected) < 3:
-                for _, item in ranked:
-                    if len(selected) >= 3:
-                        break
-                    if date_key and item["filing_date"] == date_key:
-                        continue
-                    if type_key and item["filing_type"] != type_key:
-                        continue
-                    add_selected(
-                        {
-                            "quote": item["quote"],
-                            "filing_date": item["filing_date"],
-                            "filing_type": item["filing_type"],
-                        },
-                        skip_if_used=True,
-                    )
-
-            # Final fallback: allow reuse only when filing-aligned evidence cannot be found.
-            if not selected:
-                for _, item in ranked:
-                    if len(selected) >= 3:
-                        break
-                    if date_key and item["filing_date"] != date_key and (not type_key or item["filing_type"] != type_key):
-                        continue
-                    add_selected(
-                        {
-                            "quote": item["quote"],
-                            "filing_date": item["filing_date"],
-                            "filing_type": item["filing_type"],
-                        },
-                        skip_if_used=False,
-                    )
 
             if selected:
                 current["evidence_items"] = [
@@ -2529,6 +2518,8 @@ class ProductService:
                 "strategic_implications": strategic_implications,
                 "implications": strategic_implications,
                 "confidence_coverage": confidence_coverage,
+                "strategy_evidence_map": dict(normalized.get("strategy_evidence_map") or {}),
+                "strategy_conclusion": dict(normalized.get("strategy_conclusion") or {}),
                 "themes": themes,
                 "key_moves": key_moves,
                 "risk_pairs": risk_pairs,
