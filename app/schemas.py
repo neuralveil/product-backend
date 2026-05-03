@@ -176,6 +176,17 @@ class UiStrategyEvolutionCard(BaseModel):
     evidence_items: list[UiThemeEvidence] = []
 
 
+class UiStoryBlockRef(BaseModel):
+    filing_type: str
+    filing_date: str
+
+
+class UiStoryBlock(BaseModel):
+    text: str
+    filing_refs: list[UiStoryBlockRef] = []
+    evidence_quotes: list[str] = []
+
+
 class UiSnapshotMetadata(BaseModel):
     confidence_label: str
     coverage_note: str
@@ -210,6 +221,7 @@ class UiTickerIntelligenceResponse(BaseModel):
     summary: str | None = None
     overall_strategy_story: str | None = None
     story_narrative: list[str] = []
+    story_blocks: list[UiStoryBlock] = []
     strategic_arc: str | None = None
     current_focus: str | None = None
     history_timeline: list[UiHistoryPoint] = []
