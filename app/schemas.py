@@ -209,6 +209,7 @@ class UiTickerIntelligenceResponse(BaseModel):
     narrative: str
     summary: str | None = None
     overall_strategy_story: str | None = None
+    story_narrative: list[str] = []
     strategic_arc: str | None = None
     current_focus: str | None = None
     history_timeline: list[UiHistoryPoint] = []

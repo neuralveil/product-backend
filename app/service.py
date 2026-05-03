@@ -2363,6 +2363,11 @@ class ProductService:
             or overall_strategy_story
             or ""
         ).strip()
+        story_narrative = [
+            str(item).strip()
+            for item in list(normalized.get("story_narrative") or [])
+            if str(item or "").strip()
+        ][:4]
 
         risk_pairs = list(normalized.get("risk_pairs") or [])
         if not risk_pairs:
@@ -2506,6 +2511,7 @@ class ProductService:
                 "narrative": narrative or overall_strategy_story,
                 "summary": overall_strategy_story or narrative,
                 "overall_strategy_story": overall_strategy_story or narrative,
+                "story_narrative": story_narrative or [item for item in [overall_strategy_story, current_focus] if item][:2],
                 "strategic_arc": overall_strategy_story or narrative,
                 "current_focus": current_focus or overall_strategy_story or narrative,
                 "top_current_signals": top_current_signals[:3],
