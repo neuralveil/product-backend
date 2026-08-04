@@ -422,19 +422,14 @@ class ProductService:
         normalized_ticker = ticker.upper().strip()
         precomputed = self._load_precomputed_ui_intelligence(normalized_ticker)
         if precomputed is not None:
-            # Keep precomputed payloads fast, but patch in live risk-response links
-            # when historical stored JSON is missing them.
+            # Keep precomputed payloads fast, but only patch in links from the
+            # same filing window so the UI does not present stale history as current.
             if not precomputed.risk_pairs:
                 try:
-                    links = self.get_strategy_response_links(normalized_ticker, limit=40, latest_only=True)
-                    if not links.links:
-                        links = self.get_strategy_response_links(normalized_ticker, limit=40, latest_only=False)
-                    if links.links:
-                        precomputed.risk_pairs = sorted(
-                            links.links,
-                            key=lambda row: (float(row.confidence), float(row.link_strength or 0)),
-                            reverse=True,
-                        )[:3]
+                    precomputed.risk_pairs = self._current_filing_risk_pairs(
+                        ticker=normalized_ticker,
+                        filing_date=str(precomputed.filing_date or ""),
+                    )
                 except Exception:
                     pass
             return precomputed
@@ -443,9 +438,6 @@ class ProductService:
         dominant = self.get_dominant_themes(ticker, limit=5)
         # Keep this endpoint lightweight for UI latency and reliability.
         signals = self.get_strategy_signals(ticker, limit=80, latest_only=True, include_score_components=False)
-        links = self.get_strategy_response_links(ticker, limit=40, latest_only=True)
-        if not links.links:
-            links = self.get_strategy_response_links(ticker, limit=40, latest_only=False)
         dominant_rows = list(dominant.dominant_themes or [])[:5]
 
         aggregated: dict[str, UiTheme] = {}
@@ -647,9 +639,9 @@ class ProductService:
         else:
             key_moves = key_moves[:5]
 
-        risk_pairs = sorted(links.links, key=lambda row: (float(row.confidence), float(row.link_strength or 0)), reverse=True)[:3]
         filing_date = str(snapshot.filing_date or dominant.filing_date or "")
         filing_type = str(snapshot.filing_type or dominant.filing_type or "")
+        risk_pairs = self._current_filing_risk_pairs(ticker=ticker, filing_date=filing_date)
         narrative = self._build_ui_narrative(ticker=snapshot.ticker, themes=themes, risk_pairs=risk_pairs)
         payload = self._normalize_precomputed_ui_payload(
             payload={
@@ -669,6 +661,17 @@ class ProductService:
             filing_type=filing_type,
         )
         return self._validate_model(UiTickerIntelligenceResponse, payload)
+
+    def _current_filing_risk_pairs(self, *, ticker: str, filing_date: str, limit: int = 3) -> list[Any]:
+        links = self.get_strategy_response_links(ticker, limit=40, latest_only=True)
+        rows = list(links.links or [])
+        if filing_date:
+            rows = [row for row in rows if str(row.filing_date or "") == filing_date]
+        return sorted(
+            rows,
+            key=lambda row: (float(row.confidence), float(row.link_strength or 0)),
+            reverse=True,
+        )[:limit]
 
     def search_companies(self, query: str, limit: int) -> CompanySearchResponse:
         rows = self.repo.search_companies(query, limit=limit)
@@ -977,6 +980,17 @@ class ProductService:
             response_delta = float(row.get("response_delta", 0) or 0)
             confidence = float(row.get("confidence", 0) or 0)
             link_strength = float(row.get("link_strength", 0) or 0)
+            summary = self._distilled_response_link_summary(
+                risk_theme=risk_key,
+                response_theme=response_key,
+                risk_quote=row.get("evidence_quote_risk"),
+                response_quote=row.get("evidence_quote_response"),
+                risk_label=risk_label,
+                response_label=response_label,
+                risk_delta=risk_delta,
+                response_delta=response_delta,
+                link_strength=link_strength,
+            )
 
             links.append(
                 {
@@ -986,13 +1000,7 @@ class ProductService:
                     "quarter": str(row.get("quarter", "")),
                     "confidence": confidence,
                     "link_strength": link_strength,
-                    "summary": self._response_link_summary(
-                        risk_label=risk_label,
-                        response_label=response_label,
-                        risk_delta=risk_delta,
-                        response_delta=response_delta,
-                        link_strength=link_strength,
-                    ),
+                    "summary": summary,
                     "filing_date": str(row.get("filing_date", "")),
                     "filing_type": str(row.get("filing_type", "")),
                     "risk_score": float(row.get("risk_score", 0) or 0),
@@ -1001,6 +1009,10 @@ class ProductService:
                     "response_delta": response_delta,
                     "evidence_quote_risk": row.get("evidence_quote_risk"),
                     "evidence_quote_response": row.get("evidence_quote_response"),
+                    "link_type": None,
+                    "risk_mechanism": self._response_link_mechanism(risk_key, row.get("evidence_quote_risk"), is_risk=True),
+                    "response_mechanism": self._response_link_mechanism(response_key, row.get("evidence_quote_response"), is_risk=False),
+                    "link_rationale": None,
                     "confidence_reason": self._response_link_confidence_reason(
                         confidence=confidence,
                         risk_delta=risk_delta,
@@ -1133,6 +1145,99 @@ class ProductService:
         if link_strength >= 0.6:
             return f"{risk_text} and {response_text} are appearing together as a visible pressure-and-response pattern."
         return f"{response_text} looks like the clearest company response to {risk_text} in the current filing window."
+
+    def _response_link_mechanism(self, theme_key: str, quote: Any, *, is_risk: bool) -> str:
+        if theme_key == "prudential_regulation_pressure":
+            return "prudential capital and liquidity requirements"
+        if theme_key == "liquidity_funding_pressure":
+            return "liquidity and funding constraints"
+        if theme_key == "credit_quality_deterioration":
+            return "credit quality weakening and loss provisioning"
+        if theme_key == "pipeline_execution_risk":
+            return "pipeline execution and approval risk"
+        if theme_key == "regulatory_exposure":
+            return "regulatory and compliance pressure"
+        if theme_key == "supply_chain_fragility":
+            return "supplier and logistics fragility"
+        if theme_key == "competitive_intensity":
+            return "competitive pressure"
+        if theme_key == "regulatory_remediation_program":
+            return "formal compliance remediation"
+        if theme_key == "strategic_partnership":
+            return "partnership-led response"
+        if theme_key == "ai_infrastructure_investment":
+            return "AI infrastructure build-out"
+        if theme_key == "r_and_d_investment":
+            return "R&D and capability investment"
+        if theme_key == "supply_chain_relocation":
+            return "supply chain relocation and diversification"
+        if theme_key == "large_capex_program":
+            return "capacity and infrastructure investment"
+        if theme_key == "product_category_launch":
+            return "product-led competitive response"
+        if theme_key == "subscription_pricing_shift":
+            return "pricing-model adjustment"
+        if theme_key == "divestiture_exit":
+            return "portfolio exit to preserve flexibility"
+        if theme_key == "workforce_reduction":
+            return "cost and capital preservation actions"
+        quote_text = str(quote or "").lower()
+        if quote_text:
+            if is_risk and "due to" in quote_text:
+                return "pressure described in the filing"
+            if not is_risk and any(term in quote_text for term in ["invest", "build", "expand", "launch", "partner"]):
+                return "management response described in the filing"
+        fallback = label_display_name(theme_key)
+        return fallback.lower() if fallback else theme_key.replace("_", " ")
+
+    def _distilled_response_link_summary(
+        self,
+        *,
+        risk_theme: str,
+        response_theme: str,
+        risk_quote: Any,
+        response_quote: Any,
+        risk_label: str,
+        response_label: str,
+        risk_delta: float,
+        response_delta: float,
+        link_strength: float,
+    ) -> str:
+        risk_mechanism = self._response_link_mechanism(risk_theme, risk_quote, is_risk=True)
+        response_mechanism = self._response_link_mechanism(response_theme, response_quote, is_risk=False)
+        pair = (risk_theme, response_theme)
+        if pair == ("regulatory_exposure", "regulatory_remediation_program"):
+            return f"The filing pairs {risk_mechanism} with {response_mechanism}, suggesting a compliance-oriented response."
+        if pair in {
+            ("liquidity_funding_pressure", "divestiture_exit"),
+            ("liquidity_funding_pressure", "workforce_reduction"),
+        }:
+            return f"The filing links {risk_mechanism} with {response_mechanism}, suggesting a capital-preservation response."
+        if pair in {
+            ("pipeline_execution_risk", "r_and_d_investment"),
+            ("pipeline_execution_risk", "strategic_partnership"),
+        }:
+            return f"The filing pairs {risk_mechanism} with {response_mechanism}, suggesting management is building capability against the constraint."
+        if pair in {
+            ("supply_chain_fragility", "supply_chain_relocation"),
+            ("supply_chain_fragility", "large_capex_program"),
+        }:
+            return f"The filing pairs {risk_mechanism} with {response_mechanism}, suggesting a direct mitigation effort."
+        if pair in {
+            ("competitive_intensity", "product_category_launch"),
+            ("competitive_intensity", "subscription_pricing_shift"),
+            ("competitive_intensity", "ai_infrastructure_investment"),
+        }:
+            return f"The filing links {risk_mechanism} with {response_mechanism}, suggesting an active competitive response."
+        if pair == ("credit_quality_deterioration", "strategic_partnership"):
+            return f"The filing links {risk_mechanism} with {response_mechanism}, suggesting a stabilizing response."
+        return self._response_link_summary(
+            risk_label=risk_label,
+            response_label=response_label,
+            risk_delta=risk_delta,
+            response_delta=response_delta,
+            link_strength=link_strength,
+        )
 
     def create_feedback(
         self,

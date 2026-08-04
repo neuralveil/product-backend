@@ -109,6 +109,10 @@ class ClientStrategyResponseLink(BaseModel):
     response_delta: float
     evidence_quote_risk: str | None = None
     evidence_quote_response: str | None = None
+    link_type: str | None = None
+    risk_mechanism: str | None = None
+    response_mechanism: str | None = None
+    link_rationale: str | None = None
     confidence_reason: str | None = None
 
 
