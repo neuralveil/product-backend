@@ -435,9 +435,18 @@ class ProductService:
             return precomputed
 
         snapshot = self.get_strategy_snapshot(ticker)
-        dominant = self.get_dominant_themes(ticker, limit=5)
+        try:
+            dominant = self.get_dominant_themes(ticker, limit=5)
+        except NotFoundError:
+            dominant = ClientDominantThemesResponse(
+                ticker=snapshot.ticker,
+                filing_date=snapshot.filing_date,
+                filing_type=snapshot.filing_type,
+                dominant_themes=[],
+            )
         # Keep this endpoint lightweight for UI latency and reliability.
         signals = self.get_strategy_signals(ticker, limit=80, latest_only=True, include_score_components=False)
+        links = self.get_strategy_response_links(ticker, limit=40, latest_only=True)
         dominant_rows = list(dominant.dominant_themes or [])[:5]
 
         aggregated: dict[str, UiTheme] = {}
